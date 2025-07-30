@@ -6,7 +6,7 @@ import {ApiResponse, GroupTreeItem, ProcessingContext, RegisterStudentData, Root
 import axios, {isAxiosError} from "axios";
 import {accessSecret, reloginAndStoreSession} from "./utils/secretManager";
 import {AJAX_URL} from "./config/urls";
-import {sendAdminNotification} from "./utils/helpers";
+import {NOTIFICATION_WINDOWS, sendAdminNotification} from "./utils/helpers";
 import {
   buildTreeForCollection,
   getAllGroupIdsForSemester,
@@ -492,6 +492,127 @@ export const updateCurrentWeekSchedule = functions.scheduler.onSchedule({
   console.log(`✅ Szybka aktualizacja zakończona. Zaktualizowano ${totalClassesUpdated} zajęć.`);
 });
 
+
+// =================================================================
+// Funkcja do wysyłania powiadomień o nadchodzących zajęciach
+// =================================================================
+export const testUpcomingClassNotifications = functions.https.onRequest({
+  region: LOCATION,
+},
+async (req, res) => {
+  // Sprawdź sekretny klucz w nagłówku
+  if (req.headers["x-secret-key"] !== await accessSecret("test-secret-key")) {
+    res.status(401).send("Brak autoryzacji.");
+    return;
+  }
+  // Odczytaj datę z requestu lub użyj bieżącej
+  const {dateString} = req.body;
+  const now = dateString ? new Date(dateString) : new Date();
+
+  // Wywołaj tę samą logikę z podaną datą
+  await processAndSendNotifications(now);
+  res.status(200).send(`Funkcja testowa wykonana dla daty: ${now.toISOString()}`);
+});
+
+export const sendUpcomingClassNotifications = functions.scheduler.onSchedule({
+  schedule: "*/5 * * * *",
+  timeZone: "Europe/Warsaw",
+  region: LOCATION,
+}, async () => {
+  await processAndSendNotifications(new Date());
+});
+
+/**
+ * Główna funkcja do przetwarzania i wysyłania powiadomień o nadchodzących zajęciach.
+ * Uruchamiana co 5 minut przez Cloud Scheduler.
+ * @param {Date} now Obecny czas, używany do określenia nadchodzących zajęć.
+ */
+export async function processAndSendNotifications(now: Date) {
+  const semesterInfo = getSemesterInfo(now);
+  if (!semesterInfo) {
+    console.log(`Sprawdzono ${now.toISOString()}: Okres wakacyjny. Zatrzymuję funkcję wysyłania powiadomień.`);
+    return; // Zakończ działanie funkcji
+  }
+  console.log(`Funkcja wysyłania powiadomień uruchomiona o: ${now.toISOString()}`);
+
+
+  // Pobierz wszystkie zajęcia, które mają się zacząć w ciągu najbliższych 2 godzin
+  const twoHoursFromNow = new Date(now.getTime() + 120 * 60 * 1000);
+  const upcomingClassesQuery = db.collectionGroup("classes")
+    .where("startTime", ">=", now)
+    .where("startTime", "<=", twoHoursFromNow);
+
+  const classesSnapshot = await upcomingClassesQuery.get();
+  if (classesSnapshot.empty) {
+    console.log("Brak nadchodzących zajęć w ciągu najbliższych 2 godzin.");
+    return;
+  }
+
+  // Przetwarzamy każde nadchodzące zajęcia
+  for (const classDoc of classesSnapshot.docs) {
+    const classData = classDoc.data();
+    const startTime = (classData.startTime as admin.firestore.Timestamp).toDate();
+    const groupId = classData.sourceGroupId;
+
+    // Oblicz, ile minut pozostało do rozpoczęcia zajęć
+    const minutesUntilStart = Math.round((startTime.getTime() - now.getTime()) / 60000);
+
+    // Znajdź studentów obserwujących tę grupę
+    const studentsQuery = db.collection("students")
+      .where("observedGroups", "array-contains", groupId);
+    const studentsSnapshot = await studentsQuery.get();
+
+    if (studentsSnapshot.empty) {
+      continue; // Nikt nie obserwuje tej grupy, przejdź do następnych zajęć
+    }
+
+    const tokensToNotify: string[] = [];
+
+    // Sprawdź ustawienia każdego studenta
+    for (const studentDoc of studentsSnapshot.docs) {
+      const studentData = studentDoc.data();
+      const devices = studentData.devices || {};
+
+      for (const deviceId of Object.keys(devices)) {
+        const device = devices[deviceId];
+        const preferredMinutes = NOTIFICATION_WINDOWS[device.notificationTimeOption];
+
+        // Sprawdź, czy ustawienia powiadomień pasują
+        if (
+          device.notificationEnabled === true &&
+          preferredMinutes &&
+          minutesUntilStart <= preferredMinutes &&
+          minutesUntilStart > preferredMinutes - 5 // Okno 5 minut, aby uniknąć duplikatów
+        ) {
+          if (device.token) {
+            tokensToNotify.push(device.token);
+          }
+        }
+      }
+    }
+
+    // Jeśli mamy tokeny do powiadomienia, wyślij wiadomość
+    if (tokensToNotify.length > 0) {
+      const message = {
+        notification: {
+          title: "Nadchodzące zajęcia",
+          // eslint-disable-next-line max-len
+          body: `${classData.subjectFullName} o ${startTime.toLocaleTimeString("pl-PL", {hour: "2-digit", minute: "2-digit"})} w sali ${classData.rooms[0]?.name || "N/A"}.`,
+        },
+        data: {
+          "classId": classDoc.id,
+        },
+        tokens: tokensToNotify,
+      };
+
+      console.log(`Wysyłanie powiadomienia do ${tokensToNotify.length} urządzeń dla grupy ${groupId}.`);
+      await admin.messaging().sendEachForMulticast(message);
+      // Tutaj można dodać logikę do czyszczenia nieaktywnych tokenów
+    }
+  }
+  return;
+}
+
 // =================================================================
 // Przetwarzanie planu zajęć całego semestru w kolejce Cloud Tasks==
 // =================================================================
@@ -728,3 +849,5 @@ export const getAllDeanGroups = functions.https.onCall({
     throw new functions.https.HttpsError("internal", "Błąd serwera przy budowaniu drzewa grup.");
   }
 });
+
+

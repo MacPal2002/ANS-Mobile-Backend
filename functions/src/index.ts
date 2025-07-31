@@ -2,13 +2,14 @@ import * as functions from "firebase-functions";
 import * as scheduler from "firebase-functions/v2/scheduler";
 import * as admin from "firebase-admin";
 import {loginToUniversity, getStudentGroup, fetchScheduleForGroup, getSemesterInfo} from "./utils/universityService";
-import {ApiResponse, GroupTreeItem, ProcessingContext, RegisterStudentData, RootApiResponseItem} from "./types";
+import {ApiResponse, GroupTreeItem, ProcessingContext, RegisterStudentData, RootApiResponseItem, TokenInfo} from "./types";
 import axios, {isAxiosError} from "axios";
 import {accessSecret, reloginAndStoreSession} from "./utils/secretManager";
 import {AJAX_URL} from "./config/urls";
 import {NOTIFICATION_WINDOWS, sendAdminNotification} from "./utils/helpers";
 import {
   buildTreeForCollection,
+  cleanupInvalidTokens,
   getAllGroupIdsForSemester,
   getScheduleForDay,
   getScheduleForWeek,
@@ -566,7 +567,7 @@ export async function processAndSendNotifications(now: Date) {
       continue; // Nikt nie obserwuje tej grupy, przejdź do następnych zajęć
     }
 
-    const tokensToNotify: string[] = [];
+    const tokensToNotify: TokenInfo[] = [];
 
     // Sprawdź ustawienia każdego studenta
     for (const studentDoc of studentsSnapshot.docs) {
@@ -585,7 +586,11 @@ export async function processAndSendNotifications(now: Date) {
           minutesUntilStart > preferredMinutes - 5 // Okno 5 minut, aby uniknąć duplikatów
         ) {
           if (device.token) {
-            tokensToNotify.push(device.token);
+            tokensToNotify.push({
+              token: device.token,
+              userId: studentDoc.id,
+              deviceId: deviceId,
+            });
           }
         }
       }
@@ -599,15 +604,19 @@ export async function processAndSendNotifications(now: Date) {
           // eslint-disable-next-line max-len
           body: `${classData.subjectFullName} o ${startTime.toLocaleTimeString("pl-PL", {hour: "2-digit", minute: "2-digit"})} w sali ${classData.rooms[0]?.name || "N/A"}.`,
         },
+        android: {
+          priority: "high" as const,
+        },
         data: {
           "classId": classDoc.id,
         },
-        tokens: tokensToNotify,
+        ttl: 60 * 5 * 1000,
+        tokens: tokensToNotify.map((info) => info.token),
       };
 
       console.log(`Wysyłanie powiadomienia do ${tokensToNotify.length} urządzeń dla grupy ${groupId}.`);
-      await admin.messaging().sendEachForMulticast(message);
-      // Tutaj można dodać logikę do czyszczenia nieaktywnych tokenów
+      const response = await admin.messaging().sendEachForMulticast(message);
+      await cleanupInvalidTokens(response, tokensToNotify);
     }
   }
   return;

@@ -1,5 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as admin from "firebase-admin";
+import {messaging} from "firebase-admin";
+import {TokenInfo} from "../types";
 
 
 // =================================================================
@@ -248,4 +250,48 @@ export async function buildTreeForCollection(collectionRef: { get: () => any; })
   if (snapshot.empty) return [];
   const promises = snapshot.docs.map((doc: admin.firestore.DocumentSnapshot) => buildTreeForDocument(doc));
   return Promise.all(promises);
+}
+
+/**
+ * Analizuje odpowiedź z FCM i usuwa z bazy danych tokeny, które stały się nieaktywne.
+ * @param {messaging.BatchResponse} response Odpowiedź z sendEachForMulticast.
+ * @param {TokenInfo[]} tokenInfos Oryginalna lista informacji o tokenach.
+ */
+export async function cleanupInvalidTokens(
+  response: messaging.BatchResponse,
+  tokenInfos: TokenInfo[]
+) {
+  const db = admin.firestore();
+  const tokensToDelete: TokenInfo[] = [];
+
+  response.responses.forEach((result, index) => {
+    // Sprawdź, czy wysyłka dla danego tokena się nie powiodła
+    if (!result.success) {
+      const errorCode = result.error?.code;
+      console.log(`Błąd wysyłki do tokena: ${tokenInfos[index].token}, kod: ${errorCode}`);
+
+      // Sprawdź, czy błąd oznacza, że token jest nieprawidłowy/niezarejestrowany
+      if (
+        errorCode === "messaging/registration-token-not-registered" ||
+        errorCode === "messaging/invalid-registration-token"
+      ) {
+        tokensToDelete.push(tokenInfos[index]);
+      }
+    }
+  });
+
+  // Jeśli znaleziono tokeny do usunięcia, wykonaj operacje na bazie danych
+  if (tokensToDelete.length > 0) {
+    console.log(`Znaleziono ${tokensToDelete.length} nieaktywnych tokenów do usunięcia.`);
+    // Stwórz listę wszystkich operacji usunięcia (obietnic)
+    const deletePromises = tokensToDelete.map((info) => {
+      return db.collection("students").doc(info.userId).update({
+        [`devices.${info.deviceId}`]: admin.firestore.FieldValue.delete(),
+      });
+    });
+
+    // Zaczekaj, aż wszystkie operacje zakończą się równolegle
+    await Promise.all(deletePromises);
+    console.log(`Pomyślnie usunięto dane dla ${tokensToDelete.length} nieaktywnych tokenów.`);
+  }
 }

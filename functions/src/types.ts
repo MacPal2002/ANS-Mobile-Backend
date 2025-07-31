@@ -21,3 +21,9 @@ export type ProcessingContext = {
     studyMode?: string;
     semester?: string;
 }
+
+export interface TokenInfo {
+  token: string;
+  userId: string;
+  deviceId: string;
+}

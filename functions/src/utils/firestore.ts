@@ -8,6 +8,11 @@ import {TokenInfo} from "../types";
 // Funkcje pomocnicze do pracy z Firestore =========================
 // =================================================================
 
+/**
+ * Pobiera identyfikatory wszystkich grup dziekańskich z bazy Firestore.
+ * Przechodzi przez całą strukturę kolekcji i dokumentów, aby zebrać unikalne ID grup.
+ * @return {Promise<Set<number>>} Zbiór unikalnych ID grup dziekańskich.
+ */
 export const getAllGroupIds = async (): Promise<Set<number>> => {
   const db = admin.firestore();
   const allGroupIds = new Set<number>();
@@ -43,6 +48,19 @@ export const getAllGroupIds = async (): Promise<Set<number>> => {
   return allGroupIds;
 };
 
+
+/**
+ * Przetwarza tablicę elementów i dodaje je do Firestore WriteBatch w celu zapisania.
+ * Każdy element jest przekształcany w dokument zajęć pod ścieżką "schedules/{groupId}/classes/{classId}".
+ * Funkcja wyciąga odpowiednie pola z każdego elementu, formatuje daty i ustawia dodatkowe metadane.
+ * Przetwarzane są tylko elementy z prawidłowym `classId`.
+ *
+ * @param {any[]} items - Tablica elementów do przetworzenia i zapisania.
+ * @param {number} groupId - Identyfikator grupy używany w ścieżce Firestore.
+ * @param {string} weekId - Identyfikator tygodnia przypisywany do każdego zajęcia.
+ * @param {admin.firestore.WriteBatch} batch - Instancja Firestore WriteBatch, do której dodawane są operacje.
+ * @return {Promise<number>} Liczba elementów pomyślnie dodanych do batcha.
+ */
 export const processAndSaveBatch = async (
   items: any[], groupId: number, weekId: string, batch: admin.firestore.WriteBatch,
 ): Promise<number> => {

@@ -99,7 +99,7 @@ export async function loginToUniversity(
     );
   }
 }
-
+// !!! nie działa poprawnie przez błędy w systemie uczelni !!!
 /**
  * Pobiera nazwę grupy dziekańskiej studenta.
  * @param {string} sessionCookie Aktywne ciasteczko JSESSIONID.

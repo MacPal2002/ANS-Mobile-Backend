@@ -198,6 +198,21 @@ export const registerStudent = functions.https.onCall(
   },
 );
 
+export const clearObservedGroupsForStudent = functions.scheduler.onSchedule({
+  schedule: "0 4 1 10 *", // 1 października o 4:00 rano czasu warszawskiego
+  timeZone: "Europe/Warsaw",
+  region: LOCATION,
+}, async () => {
+  const studentsSnapshot = await db.collection("students")
+    .where("observedGroups", "!=", [])
+    .get();
+  const batch = db.batch();
+  studentsSnapshot.forEach((doc) => {
+    batch.update(doc.ref, {observedGroups: []});
+  });
+  await batch.commit();
+  functions.logger.info("Pomyślnie wyczyszczono obserwowane grupy dla wszystkich studentów.");
+});
 
 /**
  * Funkcja Firebase uruchamiana zgodnie z harmonogramem (1 października o 5:00 rano).

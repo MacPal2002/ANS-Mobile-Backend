@@ -1,7 +1,7 @@
 import * as functions from "firebase-functions";
 import * as scheduler from "firebase-functions/v2/scheduler";
 import * as admin from "firebase-admin";
-import {loginToUniversity, getStudentGroup, fetchScheduleForGroup, getSemesterInfo} from "./utils/universityService";
+import {loginToUniversity, fetchScheduleForGroup, getSemesterInfo} from "./utils/universityService";
 import {ApiResponse, GroupTreeItem, ProcessingContext, RegisterStudentData, RootApiResponseItem, TokenInfo} from "./types";
 import axios, {isAxiosError} from "axios";
 import {accessSecret, reloginAndStoreSession} from "./utils/secretManager";
@@ -123,16 +123,7 @@ export const registerStudent = functions.https.onCall(
 
     // Weryfikacja w systemie uczelni
     const loginData = await loginToUniversity(albumNumber, verbisPassword);
-    const {fullName, verbisId, sessionCookie} = loginData;
-
-    // Pobranie grupy dziekańskiej
-    const groupName = await getStudentGroup(sessionCookie);
-    if (!groupName || groupName === "Nie znaleziono") {
-      throw new functions.https.HttpsError(
-        "not-found",
-        "Nie udało się pobrać grupy dziekańskiej.",
-      );
-    }
+    const {fullName, verbisId} = loginData;
 
     let newUserUid: string | null = null;
     try {
@@ -157,10 +148,23 @@ export const registerStudent = functions.https.onCall(
         email: userRecord.email,
         albumNumber: albumNumber,
         displayName: fullName,
-        deanGroupName: groupName,
         verbisId: verbisId,
         createdAt: new Date(),
-        observedGroups: [], // Domyślnie pusta lista obserwowanych grup
+        // observedGroups: [], // Domyślnie pusta lista obserwowanych grup
+        // devices: [],
+      });
+
+      // Inicjalizacja dokumentu w 'student_observed_groups' z pustą listą
+      const observedGroupsDocRef = db.collection("student_observed_groups").doc(newUserUid);
+      batch.set(observedGroupsDocRef, {
+        userId: newUserUid,
+        groups: [],
+      });
+
+      // Inicjalizacja dokumentu w 'student_devices' z pustą listą
+      const devicesDocRef = db.collection("student_devices").doc(newUserUid);
+      batch.set(devicesDocRef, {
+        userId: newUserUid,
         devices: [],
       });
 
@@ -199,16 +203,16 @@ export const registerStudent = functions.https.onCall(
 );
 
 export const clearObservedGroupsForStudent = functions.scheduler.onSchedule({
-  schedule: "0 4 1 10 *", // 1 października o 4:00 rano czasu warszawskiego
+  schedule: "0 0 1 10 *", // 1 października o północy czasu warszawskiego
   timeZone: "Europe/Warsaw",
   region: LOCATION,
 }, async () => {
-  const studentsSnapshot = await db.collection("students")
-    .where("observedGroups", "!=", [])
+  const studentsSnapshot = await db.collection("student_observed_groups")
+    .where("groups", "!=", [])
     .get();
   const batch = db.batch();
   studentsSnapshot.forEach((doc) => {
-    batch.update(doc.ref, {observedGroups: []});
+    batch.update(doc.ref, {groups: []});
   });
   await batch.commit();
   functions.logger.info("Pomyślnie wyczyszczono obserwowane grupy dla wszystkich studentów.");
@@ -219,7 +223,7 @@ export const clearObservedGroupsForStudent = functions.scheduler.onSchedule({
  * Pobiera strukturę grup z API uczelni i zapisuje ją w Firestore.
  */
 export const updateDeanGroups = functions.scheduler.onSchedule({
-  schedule: "0 5 1 10 *", // 1 października o 5:00 rano czasu warszawskiego
+  schedule: "0 1 1 10 *", // 1 października o 1:00 rano czasu warszawskiego
   timeZone: "Europe/Warsaw",
   region: LOCATION,
 }, async () => {
@@ -395,8 +399,8 @@ export const updateDeanGroups = functions.scheduler.onSchedule({
             // aby dodać jej pole do odpowiedniego dokumentu semestru.
             const docRef = db.doc(semesterDocPath);
             batch.set(docRef, {[groupName]: node.id}, {merge: true});
-            // Zapis do kolekcji `groupDetails`
-            const groupDetailsRef = db.collection("groupDetails").doc(String(node.id));
+            // Zapis do kolekcji `group_details`
+            const groupDetailsRef = db.collection("group_details").doc(String(node.id));
             batch.set(groupDetailsRef, {
               groupName: groupName,
               fullPath: semesterDocPath, // Zapisujemy ścieżkę jako dodatkową informację
@@ -574,20 +578,29 @@ export async function processAndSendNotifications(now: Date) {
     const minutesUntilStart = Math.round((startTime.getTime() - now.getTime()) / 60000);
 
     // Znajdź studentów obserwujących tę grupę
-    const studentsQuery = db.collection("students")
-      .where("observedGroups", "array-contains", groupId);
-    const studentsSnapshot = await studentsQuery.get();
+    const observedGroupsQuery = db.collection("student_observed_groups")
+      .where("groups", "array-contains", groupId);
+    const observedGroupsSnapshot = await observedGroupsQuery.get();
 
-    if (studentsSnapshot.empty) {
+    if (observedGroupsSnapshot.empty) {
       continue; // Nikt nie obserwuje tej grupy, przejdź do następnych zajęć
     }
 
     const tokensToNotify: TokenInfo[] = [];
+    const studentIds = observedGroupsSnapshot.docs.map((doc) => doc.id);
 
+    // Pobierz dane studentów
+    const studentDevicesSnapshot = await db.collection("student_devices")
+      .where(admin.firestore.FieldPath.documentId(), "in", studentIds)
+      .get();
+
+    if (studentDevicesSnapshot.empty) {
+      continue; // Brak danych studentów, przejdź do następnych zajęć
+    }
     // Sprawdź ustawienia każdego studenta
-    for (const studentDoc of studentsSnapshot.docs) {
-      const studentData = studentDoc.data();
-      const devices = studentData.devices || {};
+    for (const deviceDoc of studentDevicesSnapshot.docs) {
+      const deviceData = deviceDoc.data();
+      const devices = deviceData.devices || {};
 
       for (const deviceId of Object.keys(devices)) {
         const device = devices[deviceId];
@@ -603,7 +616,7 @@ export async function processAndSendNotifications(now: Date) {
           if (device.token) {
             tokensToNotify.push({
               token: device.token,
-              userId: studentDoc.id,
+              userId: deviceDoc.id,
               deviceId: deviceId,
             });
           }
@@ -617,7 +630,7 @@ export async function processAndSendNotifications(now: Date) {
         notification: {
           title: "Nadchodzące zajęcia",
           // eslint-disable-next-line max-len
-          body: `${classData.subjectFullName} o ${startTime.toLocaleTimeString("pl-PL", {hour: "2-digit", minute: "2-digit"})} w sali ${classData.rooms[0]?.name || "N/A"}.`,
+          body: `${classData.subjectFullName} o ${startTime.toLocaleTimeString("pl-PL", {hour: "2-digit", minute: "2-digit", timeZone: "Europe/Warsaw"})} w sali ${classData.rooms[0]?.name || "N/A"}.`,
         },
         android: {
           priority: "high" as const,
@@ -838,7 +851,7 @@ export const getGroupDetails = functions.https.onCall({
   }
 
   try {
-    const promises = groupIds.map((id) => db.collection("groupDetails").doc(String(id)).get());
+    const promises = groupIds.map((id) => db.collection("group_details").doc(String(id)).get());
     const snapshots = await Promise.all(promises);
 
     const groupDetails = snapshots.map((doc) => {

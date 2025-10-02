@@ -63,6 +63,7 @@ export async function loginToUniversity(
     const dom = new JSDOM(html);
     const doc = dom.window.document;
 
+    // TODO: obsługa błędu błędnego hasła do verbis
     const userMatch = doc.querySelector(
       "#vdo-uzytkownik > span:last-of-type",
     )?.textContent;
@@ -122,7 +123,7 @@ export async function getStudentGroup(sessionCookie: string): Promise<string> {
       if (dataFields[i].textContent?.trim() === "Grupa dziekańska:") {
         const groupName =
           dataFields[i + 1]?.textContent?.trim() ?? "Nie znaleziono";
-        functions.logger.info(`✅ Pomyślnie pobrano grupę: ${groupName}`);
+        functions.logger.info(`Pobrano grupę: ${groupName}`);
         return groupName;
       }
     }

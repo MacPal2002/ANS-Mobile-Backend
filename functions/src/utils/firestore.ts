@@ -2,7 +2,7 @@
 import deepEqual from "fast-deep-equal";
 import * as admin from "firebase-admin";
 import {messaging} from "firebase-admin";
-import {TokenInfo} from "../types";
+import {IClassComparisonData, IClassSaveData, TokenInfo, LecturerData, RoomData, ComparisonKey} from "../types";
 
 
 // =================================================================
@@ -51,26 +51,20 @@ export const getAllGroupIds = async (): Promise<Set<number>> => {
 
 /**
  * Przygotowuje dane zajęć do porównania z istniejącym dokumentem.
- * Wyklucza pola dynamiczne, takie jak 'lastUpdated'.
  * @param {any} item Dane zajęć (nowe lub istniejące).
- * @return {object} Oczyszczony obiekt danych.
+ * @return {IClassComparisonData} Oczyszczony obiekt danych.
  */
 // eslint-disable-next-line max-len
-const prepareDataForComparison = (item: any): any => {
-  let startTimeMillis;
-  let endTimeMillis;
+const prepareDataForComparison = (item: any): IClassComparisonData => {
+  let startTimeMillis: number;
+  let endTimeMillis: number;
 
-  // Funkcja pomocnicza sprawdzająca, czy dany obiekt jest poprawnym Timestampem
   const isTimestamp = (t: any) => t && typeof t.toMillis === "function";
 
-  // Zabezpieczamy OBA czasy przed wywołaniem .toMillis()
   if (isTimestamp(item.startTime) && isTimestamp(item.endTime)) {
-    // Dane z Firestore (Timestamp)
     startTimeMillis = Math.floor(item.startTime.toMillis());
     endTimeMillis = Math.floor(item.endTime.toMillis());
   } else {
-    // Dane z API (Milisekundy/Number)
-    // Używamy 0 jako wartość awaryjną, jeśli któregoś z pól brakuje w API
     const startValue = item.dataRozpoczecia || item.startTime || 0;
     const endValue = item.dataZakonczenia || item.endTime || 0;
 
@@ -78,31 +72,28 @@ const prepareDataForComparison = (item: any): any => {
     endTimeMillis = Math.floor(Number(endValue));
   }
 
-  // --- Zmiana tutaj: Zapewnienie trymowania dla tablic (Nowe/API i Stare/Firestore) ---
-  const getLecturersForComparison = (lecturersArray: any[]) => lecturersArray.map((w: any) => ({
+  const getLecturersForComparison = (lecturersArray: any[]): LecturerData[] => lecturersArray.map((w: any) => ({
     id: w.idProwadzacego || w.id,
     name: (w.stopienImieNazwisko || w.name)?.trim() || null,
   }));
 
-  const getRoomsForComparison = (roomsArray: any[]) => roomsArray.map((s: any) => ({
+  const getRoomsForComparison = (roomsArray: any[]): RoomData[] => roomsArray.map((s: any) => ({
     id: s.idSali || s.id,
     name: (s.nazwaSkrocona || s.name)?.trim() || null,
   }));
-  // ---------------------------------------------------------------------------------
 
   const lecturersToCompare =
-      (item.lecturers && getLecturersForComparison(item.lecturers)) || // Stary format (Firestore)
-      (item.wykladowcy && getLecturersForComparison(item.wykladowcy)) || // Nowy format (API)
-      [];
+        (item.lecturers && getLecturersForComparison(item.lecturers)) ||
+        (item.wykladowcy && getLecturersForComparison(item.wykladowcy)) ||
+        [];
 
   const roomsToCompare =
-      (item.rooms && getRoomsForComparison(item.rooms)) || // Stary format (Firestore)
-      (item.sale && getRoomsForComparison(item.sale)) || // Nowy format (API)
-      [];
+        (item.rooms && getRoomsForComparison(item.rooms)) ||
+        (item.sale && getRoomsForComparison(item.sale)) ||
+        [];
 
-  // Sortowanie, żeby kolejność nie wpływała na wynik porównania
-  lecturersToCompare.sort((a: any, b: any) => a.id - b.id);
-  roomsToCompare.sort((a: any, b: any) => a.id - b.id);
+  lecturersToCompare.sort((a: LecturerData, b: LecturerData) => a.id - b.id);
+  roomsToCompare.sort((a: RoomData, b: RoomData) => a.id - b.id);
 
   return {
     subjectFullName: item.nazwaPelnaPrzedmiotu?.trim() || item.subjectFullName?.trim() || null,
@@ -118,51 +109,42 @@ const prepareDataForComparison = (item: any): any => {
 
 /**
  * Funkcja pomocnicza do zwięzłego wyświetlania wartości w logach.
- * Używa JSON.stringify, aby poprawnie formatować obiekty i tablice.
- *
- * @param {any} value Wartość do sformatowania (może być obiektem, tablicą lub innym typem).
- * @param {number} [maxLength=70] Maksymalna długość zwracanego stringa (opcjonalnie, domyślnie 70).
+ * @param {any} value Wartość do sformatowania jako string.
+ * @param {number} [maxLength=70] Maksymalna długość zwracanego stringa.
  * @return {string} Sformatowana wartość jako string, skrócona jeśli przekracza maxLength.
  */
 const formatValueForLog = (value: any, maxLength = 70): string => {
   try {
     const str = JSON.stringify(value);
     if (str.length > maxLength) {
-      // Skracanie długich stringów, np. dla dużych list wykładowców/sal
       return str.substring(0, maxLength - 3) + "... (Skrócono)";
     }
     return str;
   } catch (e) {
-    return String(value); // W przypadku błędu serializacji
+    return String(value);
   }
 };
+
+
 const formatClassDetails = (data: any, docId?: string) => {
-  // 1. Ustalenie źródła milisekund (dataRozpoczecia dla API, startTime dla Firestore)
-  // UWAGA: Użycie || (LUB) pozwala na obsługę danych z API lub Firestore
   const rawStartTime = data.startTime || data.dataRozpoczecia;
 
-  // 2. Bezpieczne wyznaczenie wartości startTime w milisekundach (lub null)
   const startTimeMillis = rawStartTime ?
     (rawStartTime.toMillis ? rawStartTime.toMillis() : rawStartTime) :
     null;
 
-  // 3. Bezpieczne obliczenie pola Dzień
   const dayString = data.day || (
     startTimeMillis ? new Date(startTimeMillis).toISOString().split("T")[0] : null
   );
 
-  // Zbieranie i ujednolicanie danych
   const details = {
-    // Poprawiony odczyt ID: używamy docId (ID dokumentu) lub idSpotkania
     ID: docId || String(data.idSpotkania?.idSpotkania ?? data.id ?? "N/A"),
     KrótkaNazwa: data.subjectShortName || data.nazwaSkroconaPrzedmiotu || null,
     PełnaNazwa: data.subjectFullName || data.nazwaPelnaPrzedmiotu || null,
     Typ: data.classType || data.listaIdZajecInstancji?.[0]?.typZajec || null,
     Dzień: dayString,
-    // Zapewnienie, że logujemy pole czasu, które rzeczywiście ma wartość
     Od: data.startTime || data.dataRozpoczecia,
     Do: data.endTime || data.dataZakonczenia,
-    // ... (reszta pól bez zmian)
     Wykładowcy: (data.lecturers || data.wykladowcy)?.map((w: any) => ({
       id: w.id || w.idProwadzacego,
       name: (w.name || w.stopienImieNazwisko)?.trim(),
@@ -177,15 +159,14 @@ const formatClassDetails = (data: any, docId?: string) => {
 
 /**
  * Generuje klucz unikalności (soft key) na podstawie niezmiennych pól zajęć.
- * Służy do identyfikacji tych samych zajęć, których ID mogło zmienić się w API.
- * @param {object} item Oczyszczony obiekt z prepareDataForComparison.
+ * @param {IClassComparisonData} item Oczyszczony obiekt z prepareDataForComparison.
  * @return {string} Unikalny klucz.
  */
-const getSoftKey = (item: any): string => {
-  // Używamy najbardziej niezmiennych pól: dzień, czas rozpoczęcia, typ i krótka nazwa.
-  // Sale i Wykładowcy mogą się zmieniać, ale klucz unikalności powinien zostać stały.
-  const lecturerIds = item.lecturers.map((l: any) => l.id).join(",");
-  const roomIds = item.rooms.map((r: any) => r.id).join(",");
+const getSoftKey = (item: IClassComparisonData): string => {
+// Sortowanie list ID jest kluczowe, nawet jeśli już były posortowane w prepareDataForComparison,
+// Soft Key wymaga absolutnej stabilności formatu stringa.
+  const lecturerIds = item.lecturers.map((l: LecturerData) => l.id).sort((a, b) => a - b).join(",");
+  const roomIds = item.rooms.map((r: RoomData) => r.id).sort((a, b) => a - b).join(",");
 
   return [
     item.day,
@@ -196,6 +177,10 @@ const getSoftKey = (item: any): string => {
     roomIds,
   ].join("|");
 };
+
+// =================================================================
+// GŁÓWNA FUNKCJA PRZETWARZAJĄCA
+// =================================================================
 
 export const processAndUpdateBatch = async (
   items: any[], groupId: number, weekId: string, batch: admin.firestore.WriteBatch,
@@ -212,7 +197,8 @@ export const processAndUpdateBatch = async (
 
   // MAPOWANIE NA POTRZEBY SOFT MATCHINGU
   const existingClassesMap = new Map<string, any>();
-  const softKeyToExistingClass = new Map<string, { id: string, data: any, softKey: string }>();
+  // Dodanie typu IClassComparisonData do obiektu Soft Key
+  const softKeyToExistingClass = new Map<string, { id: string, data: any, softKey: string, comparisonData: IClassComparisonData }>();
 
   existingSnapshot.forEach((doc) => {
     const data = doc.data();
@@ -220,17 +206,17 @@ export const processAndUpdateBatch = async (
     existingClassesMap.set(docId, data);
 
     // Tworzymy oczyszczony obiekt do wyliczenia soft key
-    const dataForComparison = prepareDataForComparison(data);
-    const softKey = getSoftKey(dataForComparison);
+    const comparisonData: IClassComparisonData = prepareDataForComparison(data); // Użycie typu
+    const softKey = getSoftKey(comparisonData);
 
-    softKeyToExistingClass.set(softKey, {id: docId, data, softKey});
+    softKeyToExistingClass.set(softKey, {id: docId, data, softKey, comparisonData}); // Zapisanie danych do porównania
   });
 
   console.log(
     `[${groupId}][${weekId}] 📚 Znaleziono ${existingSnapshot.size} istniejących zajęć. Nowe dane z API: ${items.length}`
   );
 
-  const processedExistingIds = new Set<string>(); // Śledzić, które stare ID zostały użyte
+  const processedExistingIds = new Set<string>();
 
   // Porównanie i aktualizacja
   for (const newItem of items) {
@@ -242,12 +228,14 @@ export const processAndUpdateBatch = async (
     }
 
     // --- PRZYGOTOWANIE DANYCH ---
-    const newDataForComparison = prepareDataForComparison(newItem);
+    const newDataForComparison: IClassComparisonData = prepareDataForComparison(newItem); // Użycie typu
     const newSoftKey = getSoftKey(newDataForComparison);
-    // Dane do zapisu (TRYMOWANE!)
+
+    // Dane do zapisu (TRYMOWANE!) - Użycie typu IClassSaveData
     const startTime = new Date(newItem.dataRozpoczecia);
     const dayString = startTime.toISOString().split("T")[0];
-    const classDataToSave = {
+
+    const classDataToSave: IClassSaveData = {
       subjectFullName: newItem.nazwaPelnaPrzedmiotu?.trim() || null,
       subjectShortName: newItem.nazwaSkroconaPrzedmiotu?.trim() || null,
       startTime: admin.firestore.Timestamp.fromMillis(newItem.dataRozpoczecia),
@@ -266,17 +254,16 @@ export const processAndUpdateBatch = async (
       sourceGroupId: groupId,
       lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
     };
-      // ------------------------------
+    // ------------------------------
 
     // 1. SOFT MATCHING: Czy istnieje zajęcie o tym samym Soft Key?
     const existingMatch = softKeyToExistingClass.get(newSoftKey);
 
     if (existingMatch) {
-    // ZNALEZIONO DOPASOWANIE (Soft Match)
+      // ZNALEZIONO DOPASOWANIE (Soft Match)
 
       const existingId = existingMatch.id;
-      const existingItemData = existingMatch.data;
-      const existingDataForComparison = prepareDataForComparison(existingItemData);
+      const existingDataForComparison = existingMatch.comparisonData; // Pobieramy już wyliczone dane do porównania!
 
       // Używamy starego ID do aktualizacji (klucz Soft Match)
       const matchedScheduleRef = groupClassesRef.doc(existingId);
@@ -288,7 +275,7 @@ export const processAndUpdateBatch = async (
         const differences: Record<string, { old: any, new: any }> = {};
         const diffKeys: string[] = [];
 
-        for (const key of Object.keys(newDataForComparison)) {
+        for (const key of Object.keys(newDataForComparison) as ComparisonKey[]) {
           const newValStr = formatValueForLog(newDataForComparison[key]);
           const oldValStr = formatValueForLog(existingDataForComparison[key]);
 

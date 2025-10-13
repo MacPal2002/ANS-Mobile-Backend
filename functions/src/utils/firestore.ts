@@ -306,7 +306,8 @@ export const processAndUpdateBatch = async (
     } else {
       // 2. BRAK SOFT MATCHINGU: Traktujemy jako nowe zajęcia do dodania
 
-      const scheduleRef = groupClassesRef.doc(classId); // Używamy nowego ID z API
+      const scheduleRef = groupClassesRef.doc();
+      const newDocumentId = scheduleRef.id;
 
       batch.set(scheduleRef, classDataToSave);
       batchOperationsCount++;
@@ -314,8 +315,8 @@ export const processAndUpdateBatch = async (
 
       const details = formatClassDetails(newItem);
 
-      console.log(`[${groupId}][${weekId}][${classId}] ➕ DODANO: ${classDataToSave.subjectShortName} (${dayString})`);
-      console.log(`[${groupId}][${weekId}][${classId}] DODANO SZCZEGÓŁY: ${JSON.stringify(details, null, 2)}`);
+      console.log(`[${groupId}][${weekId}][${newDocumentId}] ➕ DODANO: ${classDataToSave.subjectShortName} (${dayString})`);
+      console.log(`[${groupId}][${weekId}][${newDocumentId}] DODANO SZCZEGÓŁY: ${JSON.stringify(details, null, 2)}`);
     }
   }
 

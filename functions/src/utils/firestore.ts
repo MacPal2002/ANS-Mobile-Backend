@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import deepEqual from "fast-deep-equal";
 import * as admin from "firebase-admin";
 import {messaging} from "firebase-admin";
 import {TokenInfo} from "../types";
@@ -48,8 +49,317 @@ export const getAllGroupIds = async (): Promise<Set<number>> => {
   return allGroupIds;
 };
 
+/**
+ * Przygotowuje dane zajęć do porównania z istniejącym dokumentem.
+ * Wyklucza pola dynamiczne, takie jak 'lastUpdated'.
+ * @param {any} item Dane zajęć (nowe lub istniejące).
+ * @return {object} Oczyszczony obiekt danych.
+ */
+// eslint-disable-next-line max-len
+const prepareDataForComparison = (item: any): any => {
+  let startTimeMillis;
+  let endTimeMillis;
+
+  // Funkcja pomocnicza sprawdzająca, czy dany obiekt jest poprawnym Timestampem
+  const isTimestamp = (t: any) => t && typeof t.toMillis === "function";
+
+  // Zabezpieczamy OBA czasy przed wywołaniem .toMillis()
+  if (isTimestamp(item.startTime) && isTimestamp(item.endTime)) {
+    // Dane z Firestore (Timestamp)
+    startTimeMillis = Math.floor(item.startTime.toMillis());
+    endTimeMillis = Math.floor(item.endTime.toMillis());
+  } else {
+    // Dane z API (Milisekundy/Number)
+    // Używamy 0 jako wartość awaryjną, jeśli któregoś z pól brakuje w API
+    const startValue = item.dataRozpoczecia || item.startTime || 0;
+    const endValue = item.dataZakonczenia || item.endTime || 0;
+
+    startTimeMillis = Math.floor(Number(startValue));
+    endTimeMillis = Math.floor(Number(endValue));
+  }
+
+  // --- Zmiana tutaj: Zapewnienie trymowania dla tablic (Nowe/API i Stare/Firestore) ---
+  const getLecturersForComparison = (lecturersArray: any[]) => lecturersArray.map((w: any) => ({
+    id: w.idProwadzacego || w.id,
+    name: (w.stopienImieNazwisko || w.name)?.trim() || null,
+  }));
+
+  const getRoomsForComparison = (roomsArray: any[]) => roomsArray.map((s: any) => ({
+    id: s.idSali || s.id,
+    name: (s.nazwaSkrocona || s.name)?.trim() || null,
+  }));
+  // ---------------------------------------------------------------------------------
+
+  const lecturersToCompare =
+      (item.lecturers && getLecturersForComparison(item.lecturers)) || // Stary format (Firestore)
+      (item.wykladowcy && getLecturersForComparison(item.wykladowcy)) || // Nowy format (API)
+      [];
+
+  const roomsToCompare =
+      (item.rooms && getRoomsForComparison(item.rooms)) || // Stary format (Firestore)
+      (item.sale && getRoomsForComparison(item.sale)) || // Nowy format (API)
+      [];
+
+  // Sortowanie, żeby kolejność nie wpływała na wynik porównania
+  lecturersToCompare.sort((a: any, b: any) => a.id - b.id);
+  roomsToCompare.sort((a: any, b: any) => a.id - b.id);
+
+  return {
+    subjectFullName: item.nazwaPelnaPrzedmiotu?.trim() || item.subjectFullName?.trim() || null,
+    subjectShortName: item.nazwaSkroconaPrzedmiotu?.trim() || item.subjectShortName?.trim() || null,
+    startTime: startTimeMillis,
+    endTime: endTimeMillis,
+    day: item.day || new Date(startTimeMillis).toISOString().split("T")[0],
+    classType: item.listaIdZajecInstancji?.[0]?.typZajec || item.classType || null,
+    lecturers: lecturersToCompare,
+    rooms: roomsToCompare,
+  };
+};
 
 /**
+ * Funkcja pomocnicza do zwięzłego wyświetlania wartości w logach.
+ * Używa JSON.stringify, aby poprawnie formatować obiekty i tablice.
+ *
+ * @param {any} value Wartość do sformatowania (może być obiektem, tablicą lub innym typem).
+ * @param {number} [maxLength=70] Maksymalna długość zwracanego stringa (opcjonalnie, domyślnie 70).
+ * @return {string} Sformatowana wartość jako string, skrócona jeśli przekracza maxLength.
+ */
+const formatValueForLog = (value: any, maxLength = 70): string => {
+  try {
+    const str = JSON.stringify(value);
+    if (str.length > maxLength) {
+      // Skracanie długich stringów, np. dla dużych list wykładowców/sal
+      return str.substring(0, maxLength - 3) + "... (Skrócono)";
+    }
+    return str;
+  } catch (e) {
+    return String(value); // W przypadku błędu serializacji
+  }
+};
+const formatClassDetails = (data: any, docId?: string) => {
+  // 1. Ustalenie źródła milisekund (dataRozpoczecia dla API, startTime dla Firestore)
+  // UWAGA: Użycie || (LUB) pozwala na obsługę danych z API lub Firestore
+  const rawStartTime = data.startTime || data.dataRozpoczecia;
+
+  // 2. Bezpieczne wyznaczenie wartości startTime w milisekundach (lub null)
+  const startTimeMillis = rawStartTime ?
+    (rawStartTime.toMillis ? rawStartTime.toMillis() : rawStartTime) :
+    null;
+
+  // 3. Bezpieczne obliczenie pola Dzień
+  const dayString = data.day || (
+    startTimeMillis ? new Date(startTimeMillis).toISOString().split("T")[0] : null
+  );
+
+  // Zbieranie i ujednolicanie danych
+  const details = {
+    // Poprawiony odczyt ID: używamy docId (ID dokumentu) lub idSpotkania
+    ID: docId || String(data.idSpotkania?.idSpotkania ?? data.id ?? "N/A"),
+    KrótkaNazwa: data.subjectShortName || data.nazwaSkroconaPrzedmiotu || null,
+    PełnaNazwa: data.subjectFullName || data.nazwaPelnaPrzedmiotu || null,
+    Typ: data.classType || data.listaIdZajecInstancji?.[0]?.typZajec || null,
+    Dzień: dayString,
+    // Zapewnienie, że logujemy pole czasu, które rzeczywiście ma wartość
+    Od: data.startTime || data.dataRozpoczecia,
+    Do: data.endTime || data.dataZakonczenia,
+    // ... (reszta pól bez zmian)
+    Wykładowcy: (data.lecturers || data.wykladowcy)?.map((w: any) => ({
+      id: w.id || w.idProwadzacego,
+      name: (w.name || w.stopienImieNazwisko)?.trim(),
+    })) || [],
+    Sale: (data.rooms || data.sale)?.map((s: any) => ({
+      id: s.id || s.idSali,
+      name: (s.name || s.nazwaSkrocona)?.trim(),
+    })) || [],
+  };
+  return details;
+};
+
+/**
+ * Generuje klucz unikalności (soft key) na podstawie niezmiennych pól zajęć.
+ * Służy do identyfikacji tych samych zajęć, których ID mogło zmienić się w API.
+ * @param {object} item Oczyszczony obiekt z prepareDataForComparison.
+ * @return {string} Unikalny klucz.
+ */
+const getSoftKey = (item: any): string => {
+  // Używamy najbardziej niezmiennych pól: dzień, czas rozpoczęcia, typ i krótka nazwa.
+  // Sale i Wykładowcy mogą się zmieniać, ale klucz unikalności powinien zostać stały.
+  const lecturerIds = item.lecturers.map((l: any) => l.id).join(",");
+  const roomIds = item.rooms.map((r: any) => r.id).join(",");
+
+  return [
+    item.day,
+    item.startTime,
+    item.classType,
+    item.subjectShortName,
+    lecturerIds,
+    roomIds,
+  ].join("|");
+};
+
+export const processAndUpdateBatch = async (
+  items: any[], groupId: number, weekId: string, batch: admin.firestore.WriteBatch,
+): Promise<{ batchOperationsCount: number, changedClassesCount: number }> => {
+  const db = admin.firestore();
+  let batchOperationsCount = 0;
+  let changedClassesCount = 0;
+
+  const groupClassesRef = db.collection("schedules").doc(groupId.toString()).collection("classes");
+
+  // Pobieranie istniejących zajęć
+  console.log(`[${groupId}][${weekId}] 📥 Rozpoczynam pobieranie istniejących zajęć.`);
+  const existingSnapshot = await groupClassesRef.where("weekId", "==", weekId).get();
+
+  // MAPOWANIE NA POTRZEBY SOFT MATCHINGU
+  const existingClassesMap = new Map<string, any>();
+  const softKeyToExistingClass = new Map<string, { id: string, data: any, softKey: string }>();
+
+  existingSnapshot.forEach((doc) => {
+    const data = doc.data();
+    const docId = String(doc.id);
+    existingClassesMap.set(docId, data);
+
+    // Tworzymy oczyszczony obiekt do wyliczenia soft key
+    const dataForComparison = prepareDataForComparison(data);
+    const softKey = getSoftKey(dataForComparison);
+
+    softKeyToExistingClass.set(softKey, {id: docId, data, softKey});
+  });
+
+  console.log(
+    `[${groupId}][${weekId}] 📚 Znaleziono ${existingSnapshot.size} istniejących zajęć. Nowe dane z API: ${items.length}`
+  );
+
+  const processedExistingIds = new Set<string>(); // Śledzić, które stare ID zostały użyte
+
+  // Porównanie i aktualizacja
+  for (const newItem of items) {
+    const classId = String(newItem.idSpotkania?.idSpotkania ?? ""); // ID z API
+
+    if (!classId) {
+      console.warn(`[${groupId}][${weekId}] ⚠️ Pominięto element bez ID: ${JSON.stringify(newItem)}`);
+      continue;
+    }
+
+    // --- PRZYGOTOWANIE DANYCH ---
+    const newDataForComparison = prepareDataForComparison(newItem);
+    const newSoftKey = getSoftKey(newDataForComparison);
+    // Dane do zapisu (TRYMOWANE!)
+    const startTime = new Date(newItem.dataRozpoczecia);
+    const dayString = startTime.toISOString().split("T")[0];
+    const classDataToSave = {
+      subjectFullName: newItem.nazwaPelnaPrzedmiotu?.trim() || null,
+      subjectShortName: newItem.nazwaSkroconaPrzedmiotu?.trim() || null,
+      startTime: admin.firestore.Timestamp.fromMillis(newItem.dataRozpoczecia),
+      endTime: admin.firestore.Timestamp.fromMillis(newItem.dataZakonczenia),
+      day: dayString,
+      classType: newItem.listaIdZajecInstancji?.[0]?.typZajec || null,
+      weekId,
+      lecturers: newItem.wykladowcy?.map((w: any) => ({
+        id: w.idProwadzacego,
+        name: w.stopienImieNazwisko?.trim(),
+      })) || [],
+      rooms: newItem.sale?.map((s: any) => ({
+        id: s.idSali,
+        name: s.nazwaSkrocona?.trim(),
+      })) || [],
+      sourceGroupId: groupId,
+      lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+    };
+      // ------------------------------
+
+    // 1. SOFT MATCHING: Czy istnieje zajęcie o tym samym Soft Key?
+    const existingMatch = softKeyToExistingClass.get(newSoftKey);
+
+    if (existingMatch) {
+    // ZNALEZIONO DOPASOWANIE (Soft Match)
+
+      const existingId = existingMatch.id;
+      const existingItemData = existingMatch.data;
+      const existingDataForComparison = prepareDataForComparison(existingItemData);
+
+      // Używamy starego ID do aktualizacji (klucz Soft Match)
+      const matchedScheduleRef = groupClassesRef.doc(existingId);
+      processedExistingIds.add(existingId);
+
+      // Jeżeli deepEqual zwróci false (wykryto zmianę w szczegółach)
+      if (!deepEqual(newDataForComparison, existingDataForComparison)) {
+        // --- Ręczne zbieranie różnic (dla logowania) ---
+        const differences: Record<string, { old: any, new: any }> = {};
+        const diffKeys: string[] = [];
+
+        for (const key of Object.keys(newDataForComparison)) {
+          const newValStr = formatValueForLog(newDataForComparison[key]);
+          const oldValStr = formatValueForLog(existingDataForComparison[key]);
+
+          if (newValStr !== oldValStr) {
+            diffKeys.push(key);
+            differences[key] = {
+              old: existingDataForComparison[key],
+              new: newDataForComparison[key],
+            };
+          }
+        }
+        // ------------------------------------------------
+
+        batch.set(matchedScheduleRef, classDataToSave, {merge: true});
+        batchOperationsCount++;
+        changedClassesCount++;
+
+        const diffDetails = diffKeys.map((key) => {
+          const diff = differences[key];
+          return `${key}: (Stara) ${formatValueForLog(diff.old)} -> (Nowa) ${formatValueForLog(diff.new)}`;
+        }).join("; ");
+
+        console.log(
+          // eslint-disable-next-line max-len
+          `[${groupId}][${weekId}][${existingId}] 🔄 ZAKTUALIZOWANO (Soft Match): ${classDataToSave.subjectShortName} (${dayString}). Zmienione pola: ${diffKeys.join(", ")}. Szczegóły: ${diffDetails}`
+        );
+      }
+    } else {
+      // 2. BRAK SOFT MATCHINGU: Traktujemy jako nowe zajęcia do dodania
+
+      const scheduleRef = groupClassesRef.doc(classId); // Używamy nowego ID z API
+
+      batch.set(scheduleRef, classDataToSave);
+      batchOperationsCount++;
+      changedClassesCount++;
+
+      const details = formatClassDetails(newItem);
+
+      console.log(`[${groupId}][${weekId}][${classId}] ➕ DODANO: ${classDataToSave.subjectShortName} (${dayString})`);
+      console.log(`[${groupId}][${weekId}][${classId}] DODANO SZCZEGÓŁY: ${JSON.stringify(details, null, 2)}`);
+    }
+  }
+
+  // Usuwanie zajęć, które ZNIKNĘŁY z planu (nie zostały użyte w Soft Matchingu)
+  for (const classId of existingClassesMap.keys()) {
+    if (!processedExistingIds.has(classId)) {
+      const deletedItemData = existingClassesMap.get(classId);
+      batch.delete(groupClassesRef.doc(classId));
+      batchOperationsCount++;
+      changedClassesCount++;
+      if (deletedItemData) {
+        const details = formatClassDetails(deletedItemData, classId);
+        console.log(
+          `[${groupId}][${weekId}][${classId}] ➖ USUNIĘTO: ${details.KrótkaNazwa} (${details.Typ}) dnia ${details.Dzień}`
+        );
+        console.log(`[${groupId}][${weekId}][${classId}] USUNIĘTE SZCZEGÓŁY: ${JSON.stringify(details, null, 2)}`);
+      } else {
+        // eslint-disable-next-line max-len
+        console.log(`[${groupId}][${weekId}][${classId}] ➖ USUNIĘTO: Zajęcia (ID: ${classId}) nie znalezione w nowych danych. Brak szczegółowych danych.`);
+      }
+    }
+  }
+
+  // eslint-disable-next-line max-len
+  console.log(`[${groupId}][${weekId}] 🏁 Zakończono przetwarzanie grupy. Operacje w batchu: ${batchOperationsCount}, Zmiany zajęć: ${changedClassesCount}`);
+
+  return {batchOperationsCount, changedClassesCount};
+};
+
+/**
+ * @deprecated
  * Przetwarza tablicę elementów i dodaje je do Firestore WriteBatch w celu zapisania.
  * Każdy element jest przekształcany w dokument zajęć pod ścieżką "schedules/{groupId}/classes/{classId}".
  * Funkcja wyciąga odpowiednie pola z każdego elementu, formatuje daty i ustawia dodatkowe metadane.

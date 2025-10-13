@@ -166,7 +166,7 @@ export const fetchScheduleForGroup = async (groupId: number, weekStartTimestamp:
   try {
     const response = await axios.post(AJAX_URL, payload, {headers});
 
-    // ✅ ZMIANA: Sprawdzanie błędu sesji
+    // Sprawdzanie błędu sesji
     if (response.data?.exceptionClass?.includes("LoginRequiredException")) {
       console.warn(`⚠️ Sesja wygasła dla grupy ${groupId}. Próba ponownego zalogowania i restart funkcji...`);
       await reloginAndStoreSession();

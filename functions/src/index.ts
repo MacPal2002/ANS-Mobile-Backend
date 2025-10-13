@@ -13,7 +13,7 @@ import {
   getAllGroupIdsForSemester,
   getScheduleForDay,
   getScheduleForWeek,
-  processAndSaveBatch,
+  processAndUpdateBatch,
 } from "./utils/firestore";
 import {CloudTasksClient} from "@google-cloud/tasks";
 
@@ -26,8 +26,6 @@ const tasksClient = new CloudTasksClient();
 const PROJECT_ID = process.env.GCLOUD_PROJECT!;
 const QUEUE_NAME = "schedule-update-queue";
 const LOCATION = "europe-central2";
-
-// const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 
 // --- GŁÓWNE FUNKCJE W CHMURZE ---
@@ -480,36 +478,51 @@ export const updateCurrentWeekSchedule = functions.scheduler.onSchedule({
   const weekStartTimestamp = monday.getTime();
   const weekId = weekStartTimestamp.toString();
 
-  let totalClassesUpdated = 0;
+  let totalChangedClasses = 0;
   let batch = db.batch();
-  let batchCounter = 0;
+  let batchOperationsCounter = 0;
 
   for (const groupId of groupIds) {
+    console.log(`[${groupId}] ⚙️ Rozpoczynam przetwarzanie grupy.`);
+
     const scheduleItems = await fetchScheduleForGroup(groupId, weekStartTimestamp);
+    console.log(`[${groupId}] Otrzymano ${scheduleItems.length} zajęć z zewnętrznego API.`);
+
     if (scheduleItems.length > 0) {
+      // 1. Zapis metadanych grupy (zawsze)
       const groupDocRef = db.collection("schedules").doc(groupId.toString());
       batch.set(groupDocRef, {lastUpdated: admin.firestore.FieldValue.serverTimestamp()}, {merge: true});
-      batchCounter++;
+      batchOperationsCounter++;
 
-      const savedCount = await processAndSaveBatch(scheduleItems, groupId, weekId, batch);
-      totalClassesUpdated += savedCount;
-      batchCounter += savedCount;
+      console.log(`[${groupId}] Wywołuję processAndUpdateBatch...`);
+
+      // 2. Przetwarzanie zajęć i dodawanie operacji do TEGO SAMEGO batcha
+      const {batchOperationsCount: groupClassesOperations, changedClassesCount} =
+        await processAndUpdateBatch(scheduleItems, groupId, weekId, batch);
+      totalChangedClasses += changedClassesCount;
+      batchOperationsCounter += groupClassesOperations;
+
+      console.log(`[${groupId}] Zakończono. Operacje w batchu: ${groupClassesOperations}, Zmiany zajęć: ${changedClassesCount}.`);
+    } else {
+      console.log(`[${groupId}] Brak danych z API lub błąd pobierania. Pomijam aktualizację.`);
     }
 
-    if (batchCounter >= 450) {
+    // 3. Zarządzanie limitem batcha w funkcji nadrzędnej
+    if (batchOperationsCounter >= 450) {
       await batch.commit();
-      console.log(`Zapisano paczkę ${batchCounter} operacji.`);
+      console.log(`⚡️ GŁÓWNY COMMIT: Zapisano paczkę ${batchOperationsCounter} operacji.`);
       batch = db.batch();
-      batchCounter = 0;
+      batchOperationsCounter = 0;
     }
   }
 
-  // Zatwierdź ostatnią, niepełną paczkę
-  if (batchCounter > 0) {
+  // 4. Zatwierdzenie ostatniej, niepełnej paczki
+  if (batchOperationsCounter > 0) {
     await batch.commit();
+    console.log(`⚡️ OSTATNI COMMIT: Zapisano końcową paczkę ${batchOperationsCounter} operacji.`);
   }
 
-  console.log(`✅ Szybka aktualizacja zakończona. Zaktualizowano ${totalClassesUpdated} zajęć.`);
+  console.log(`✅ Szybka aktualizacja zakończona. Zaktualizowano ${totalChangedClasses} zajęć.`);
 });
 
 
@@ -745,9 +758,12 @@ async (req, res) => {
 
       if (scheduleItems.length > 0) {
         emptyWeeksCounter = 0;
-        const savedCount = await processAndSaveBatch(scheduleItems, groupId, weekId, batch);
-        totalClassesSaved += savedCount;
-        batchCounter += savedCount;
+
+        // Używamy zoptymalizowanej funkcji porównującej/aktualizującej
+        const {batchOperationsCount: savedOps, changedClassesCount: changes} =
+        await processAndUpdateBatch(scheduleItems, groupId, weekId, batch);
+        totalClassesSaved += changes;
+        batchCounter += savedOps;
       } else {
         emptyWeeksCounter++;
         if (emptyWeeksCounter >= MAX_EMPTY_WEEKS) {

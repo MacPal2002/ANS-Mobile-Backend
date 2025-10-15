@@ -3,6 +3,9 @@ import deepEqual from "fast-deep-equal";
 import * as admin from "firebase-admin";
 import {messaging} from "firebase-admin";
 import {IClassComparisonData, IClassSaveData, TokenInfo, LecturerData, RoomData, ComparisonKey} from "../types";
+import {formatValueForLog} from "./helpers";
+import {db} from "./admin";
+import {COLLECTIONS} from "../config/firebase/collections";
 
 
 // =================================================================
@@ -15,11 +18,10 @@ import {IClassComparisonData, IClassSaveData, TokenInfo, LecturerData, RoomData,
  * @return {Promise<Set<number>>} Zbiór unikalnych ID grup dziekańskich.
  */
 export const getAllGroupIds = async (): Promise<Set<number>> => {
-  const db = admin.firestore();
   const allGroupIds = new Set<number>();
 
   // 1. Pobierz dokumenty lat (np. "2024-2025")
-  const academicYearSnapshot = await db.collection("deanGroups").get();
+  const academicYearSnapshot = await db.collection(COLLECTIONS.DEAN_GROUPS).get();
 
   for (const yearDoc of academicYearSnapshot.docs) {
     // 2. Pobierz kolekcje semestrów (np. "2024Z")
@@ -49,139 +51,6 @@ export const getAllGroupIds = async (): Promise<Set<number>> => {
   return allGroupIds;
 };
 
-/**
- * Przygotowuje dane zajęć do porównania z istniejącym dokumentem.
- * @param {any} item Dane zajęć (nowe lub istniejące).
- * @return {IClassComparisonData} Oczyszczony obiekt danych.
- */
-// eslint-disable-next-line max-len
-const prepareDataForComparison = (item: any): IClassComparisonData => {
-  let startTimeMillis: number;
-  let endTimeMillis: number;
-
-  const isTimestamp = (t: any) => t && typeof t.toMillis === "function";
-
-  if (isTimestamp(item.startTime) && isTimestamp(item.endTime)) {
-    startTimeMillis = Math.floor(item.startTime.toMillis());
-    endTimeMillis = Math.floor(item.endTime.toMillis());
-  } else {
-    const startValue = item.dataRozpoczecia || item.startTime || 0;
-    const endValue = item.dataZakonczenia || item.endTime || 0;
-
-    startTimeMillis = Math.floor(Number(startValue));
-    endTimeMillis = Math.floor(Number(endValue));
-  }
-
-  const getLecturersForComparison = (lecturersArray: any[]): LecturerData[] => lecturersArray.map((w: any) => ({
-    id: w.idProwadzacego || w.id,
-    name: (w.stopienImieNazwisko || w.name)?.trim() || null,
-  }));
-
-  const getRoomsForComparison = (roomsArray: any[]): RoomData[] => roomsArray.map((s: any) => ({
-    id: s.idSali || s.id,
-    name: (s.nazwaSkrocona || s.name)?.trim() || null,
-  }));
-
-  const lecturersToCompare =
-        (item.lecturers && getLecturersForComparison(item.lecturers)) ||
-        (item.wykladowcy && getLecturersForComparison(item.wykladowcy)) ||
-        [];
-
-  const roomsToCompare =
-        (item.rooms && getRoomsForComparison(item.rooms)) ||
-        (item.sale && getRoomsForComparison(item.sale)) ||
-        [];
-
-  lecturersToCompare.sort((a: LecturerData, b: LecturerData) => a.id - b.id);
-  roomsToCompare.sort((a: RoomData, b: RoomData) => a.id - b.id);
-
-  return {
-    subjectFullName: item.nazwaPelnaPrzedmiotu?.trim() || item.subjectFullName?.trim() || null,
-    subjectShortName: item.nazwaSkroconaPrzedmiotu?.trim() || item.subjectShortName?.trim() || null,
-    startTime: startTimeMillis,
-    endTime: endTimeMillis,
-    day: item.day || new Date(startTimeMillis).toISOString().split("T")[0],
-    classType: item.listaIdZajecInstancji?.[0]?.typZajec || item.classType || null,
-    lecturers: lecturersToCompare,
-    rooms: roomsToCompare,
-  };
-};
-
-/**
- * Funkcja pomocnicza do zwięzłego wyświetlania wartości w logach.
- * @param {any} value Wartość do sformatowania jako string.
- * @param {number} [maxLength=70] Maksymalna długość zwracanego stringa.
- * @return {string} Sformatowana wartość jako string, skrócona jeśli przekracza maxLength.
- */
-const formatValueForLog = (value: any, maxLength = 70): string => {
-  try {
-    const str = JSON.stringify(value);
-    if (str.length > maxLength) {
-      return str.substring(0, maxLength - 3) + "... (Skrócono)";
-    }
-    return str;
-  } catch (e) {
-    return String(value);
-  }
-};
-
-
-const formatClassDetails = (data: any, docId?: string) => {
-  const rawStartTime = data.startTime || data.dataRozpoczecia;
-
-  const startTimeMillis = rawStartTime ?
-    (rawStartTime.toMillis ? rawStartTime.toMillis() : rawStartTime) :
-    null;
-
-  const dayString = data.day || (
-    startTimeMillis ? new Date(startTimeMillis).toISOString().split("T")[0] : null
-  );
-
-  const details = {
-    ID: docId || String(data.idSpotkania?.idSpotkania ?? data.id ?? "N/A"),
-    KrótkaNazwa: data.subjectShortName || data.nazwaSkroconaPrzedmiotu || null,
-    PełnaNazwa: data.subjectFullName || data.nazwaPelnaPrzedmiotu || null,
-    Typ: data.classType || data.listaIdZajecInstancji?.[0]?.typZajec || null,
-    Dzień: dayString,
-    Od: data.startTime || data.dataRozpoczecia,
-    Do: data.endTime || data.dataZakonczenia,
-    Wykładowcy: (data.lecturers || data.wykladowcy)?.map((w: any) => ({
-      id: w.id || w.idProwadzacego,
-      name: (w.name || w.stopienImieNazwisko)?.trim(),
-    })) || [],
-    Sale: (data.rooms || data.sale)?.map((s: any) => ({
-      id: s.id || s.idSali,
-      name: (s.name || s.nazwaSkrocona)?.trim(),
-    })) || [],
-  };
-  return details;
-};
-
-/**
- * Generuje klucz unikalności (soft key) na podstawie niezmiennych pól zajęć.
- * @param {IClassComparisonData} item Oczyszczony obiekt z prepareDataForComparison.
- * @return {string} Unikalny klucz.
- */
-const getSoftKey = (item: IClassComparisonData): string => {
-// Sortowanie list ID jest kluczowe, nawet jeśli już były posortowane w prepareDataForComparison,
-// Soft Key wymaga absolutnej stabilności formatu stringa.
-  const lecturerIds = item.lecturers.map((l: LecturerData) => l.id).sort((a, b) => a - b).join(",");
-  const roomIds = item.rooms.map((r: RoomData) => r.id).sort((a, b) => a - b).join(",");
-
-  return [
-    item.day,
-    item.startTime,
-    item.classType,
-    item.subjectShortName,
-    lecturerIds,
-    roomIds,
-  ].join("|");
-};
-
-// =================================================================
-// GŁÓWNA FUNKCJA PRZETWARZAJĄCA
-// =================================================================
-
 export const processAndUpdateBatch = async (
   items: any[], groupId: number, weekId: string, batch: admin.firestore.WriteBatch,
 ): Promise<{ batchOperationsCount: number, changedClassesCount: number }> => {
@@ -189,7 +58,7 @@ export const processAndUpdateBatch = async (
   let batchOperationsCount = 0;
   let changedClassesCount = 0;
 
-  const groupClassesRef = db.collection("schedules").doc(groupId.toString()).collection("classes");
+  const groupClassesRef = db.collection(COLLECTIONS.SCHEDULES).doc(groupId.toString()).collection(COLLECTIONS.CLASSES_SUBCOLLECTION);
 
   // Pobieranie istniejących zajęć
   console.log(`[${groupId}][${weekId}] 📥 Rozpoczynam pobieranie istniejących zajęć.`);
@@ -362,7 +231,6 @@ export const processAndUpdateBatch = async (
 export const processAndSaveBatch = async (
   items: any[], groupId: number, weekId: string, batch: admin.firestore.WriteBatch,
 ): Promise<number> => {
-  const db = admin.firestore();
   let itemsInBatch = 0;
   for (const item of items) {
     const classId = item.idSpotkania?.idSpotkania?.toString();
@@ -385,7 +253,8 @@ export const processAndSaveBatch = async (
       lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
     };
 
-    const scheduleRef = db.collection("schedules").doc(groupId.toString()).collection("classes").doc(classId);
+    // eslint-disable-next-line max-len
+    const scheduleRef = db.collection(COLLECTIONS.SCHEDULES).doc(groupId.toString()).collection(COLLECTIONS.CLASSES_SUBCOLLECTION).doc(classId);
     batch.set(scheduleRef, classData, {merge: true});
     itemsInBatch++;
   }
@@ -399,7 +268,6 @@ export const processAndSaveBatch = async (
  * @return {Promise<Set<number>>} Zbiór unikalnych ID grup.
  */
 export const getAllGroupIdsForSemester = async (semesterIdentifier: string): Promise<Set<number>> => {
-  const db = admin.firestore();
   const allGroupIds = new Set<number>();
 
   // 1. Określ rok akademicki na podstawie identyfikatora semestru
@@ -409,7 +277,7 @@ export const getAllGroupIdsForSemester = async (semesterIdentifier: string): Pro
   const academicYear = type === "Z" ? `${year}-${year + 1}` : `${year - 1}-${year}`;
 
   // 2. Zbuduj ścieżkę startową do kolekcji kierunków studiów
-  const fieldsOfStudyCollectionRef = db.collection(`deanGroups/${academicYear}/${semesterIdentifier}`);
+  const fieldsOfStudyCollectionRef = db.collection(`${COLLECTIONS.DEAN_GROUPS}/${academicYear}/${semesterIdentifier}`);
 
   // 3. Rozpocznij przechodzenie przez strukturę od tego miejsca
   const fieldDocsSnapshot = await fieldsOfStudyCollectionRef.get();
@@ -419,22 +287,25 @@ export const getAllGroupIdsForSemester = async (semesterIdentifier: string): Pro
     return allGroupIds;
   }
 
-  for (const fieldDoc of fieldDocsSnapshot.docs) {
-    const modeColls = await fieldDoc.ref.listCollections();
-    for (const modeColl of modeColls) {
-      const semesterDocsSnapshot = await modeColl.get();
-      for (const semesterDoc of semesterDocsSnapshot.docs) {
-        const groupData = semesterDoc.data();
-        // 4. Zbierz wszystkie wartości liczbowe (ID grup) z każdego dokumentu
-        Object.values(groupData).forEach((id) => {
-          if (typeof id === "number") {
-            allGroupIds.add(id);
-          }
-        });
-      }
-    }
-  }
 
+  const modeCollsPromises = fieldDocsSnapshot.docs.map((fieldDoc) => fieldDoc.ref.listCollections());
+  const allModeCollsNested = await Promise.all(modeCollsPromises);
+  const allModeColls = allModeCollsNested.flat(); // Spłaszcz tablicę tablic
+
+  // Zbierz wszystkie obietnice pobierania dokumentów
+  const semesterDocsPromises = allModeColls.map((modeColl) => modeColl.get());
+  const allSemesterSnapshots = await Promise.all(semesterDocsPromises);
+
+  // Teraz iteruj po wynikach, które już masz
+  for (const semesterDoc of allSemesterSnapshots.flatMap((snap) => snap.docs)) {
+    const groupData = semesterDoc.data();
+    // 4. Zbierz wszystkie wartości liczbowe (ID grup) z każdego dokumentu
+    Object.values(groupData).forEach((id) => {
+      if (typeof id === "number") {
+        allGroupIds.add(id);
+      }
+    });
+  }
   return allGroupIds;
 };
 
@@ -446,11 +317,9 @@ export const getAllGroupIdsForSemester = async (semesterIdentifier: string): Pro
  * @return {Promise<any[]>} Tablica obiektów z zajęciami lub pusta tablica.
  */
 export async function getScheduleForDay(groupId: number, dateString: string): Promise<any[]> {
-  const db = admin.firestore();
-
-  const scheduleCollectionRef = db.collection("schedules")
+  const scheduleCollectionRef = db.collection(COLLECTIONS.SCHEDULES)
     .doc(groupId.toString())
-    .collection("classes");
+    .collection(COLLECTIONS.CLASSES_SUBCOLLECTION);
 
   // Zapytanie filtruje po polu "day" i sortuje po czasie rozpoczęcia
   const q = scheduleCollectionRef
@@ -475,11 +344,10 @@ export async function getScheduleForDay(groupId: number, dateString: string): Pr
  * @return {Promise<any[]>} Tablica obiektów z zajęciami.
  */
 export async function getScheduleForWeek(groupId: number, weekId: string): Promise<any[]> {
-  const db = admin.firestore();
   const scheduleCollectionRef = db
-    .collection("schedules")
+    .collection(COLLECTIONS.SCHEDULES)
     .doc(groupId.toString())
-    .collection("classes");
+    .collection(COLLECTIONS.CLASSES_SUBCOLLECTION);
 
   const q = scheduleCollectionRef
     .where("weekId", "==", weekId)
@@ -611,3 +479,113 @@ export async function cleanupInvalidTokens(
     console.log(`Pomyślnie usunięto dane dla ${tokensToDelete.length} nieaktywnych tokenów.`);
   }
 }
+
+/**
+ * Przygotowuje dane zajęć do porównania z istniejącym dokumentem.
+ * @param {any} item Dane zajęć (nowe lub istniejące).
+ * @return {IClassComparisonData} Oczyszczony obiekt danych.
+ */
+// eslint-disable-next-line max-len
+const prepareDataForComparison = (item: any): IClassComparisonData => {
+  let startTimeMillis: number;
+  let endTimeMillis: number;
+
+  const isTimestamp = (t: any) => t && typeof t.toMillis === "function";
+
+  if (isTimestamp(item.startTime) && isTimestamp(item.endTime)) {
+    startTimeMillis = Math.floor(item.startTime.toMillis());
+    endTimeMillis = Math.floor(item.endTime.toMillis());
+  } else {
+    const startValue = item.dataRozpoczecia || item.startTime || 0;
+    const endValue = item.dataZakonczenia || item.endTime || 0;
+
+    startTimeMillis = Math.floor(Number(startValue));
+    endTimeMillis = Math.floor(Number(endValue));
+  }
+
+  const getLecturersForComparison = (lecturersArray: any[]): LecturerData[] => lecturersArray.map((w: any) => ({
+    id: w.idProwadzacego || w.id,
+    name: (w.stopienImieNazwisko || w.name)?.trim() || null,
+  }));
+
+  const getRoomsForComparison = (roomsArray: any[]): RoomData[] => roomsArray.map((s: any) => ({
+    id: s.idSali || s.id,
+    name: (s.nazwaSkrocona || s.name)?.trim() || null,
+  }));
+
+  const lecturersToCompare =
+        (item.lecturers && getLecturersForComparison(item.lecturers)) ||
+        (item.wykladowcy && getLecturersForComparison(item.wykladowcy)) ||
+        [];
+
+  const roomsToCompare =
+        (item.rooms && getRoomsForComparison(item.rooms)) ||
+        (item.sale && getRoomsForComparison(item.sale)) ||
+        [];
+
+  lecturersToCompare.sort((a: LecturerData, b: LecturerData) => a.id - b.id);
+  roomsToCompare.sort((a: RoomData, b: RoomData) => a.id - b.id);
+
+  return {
+    subjectFullName: item.nazwaPelnaPrzedmiotu?.trim() || item.subjectFullName?.trim() || null,
+    subjectShortName: item.nazwaSkroconaPrzedmiotu?.trim() || item.subjectShortName?.trim() || null,
+    startTime: startTimeMillis,
+    endTime: endTimeMillis,
+    day: item.day || new Date(startTimeMillis).toISOString().split("T")[0],
+    classType: item.listaIdZajecInstancji?.[0]?.typZajec || item.classType || null,
+    lecturers: lecturersToCompare,
+    rooms: roomsToCompare,
+  };
+};
+const formatClassDetails = (data: any, docId?: string) => {
+  const rawStartTime = data.startTime || data.dataRozpoczecia;
+
+  const startTimeMillis = rawStartTime ?
+    (rawStartTime.toMillis ? rawStartTime.toMillis() : rawStartTime) :
+    null;
+
+  const dayString = data.day || (
+    startTimeMillis ? new Date(startTimeMillis).toISOString().split("T")[0] : null
+  );
+
+  const details = {
+    ID: docId || String(data.idSpotkania?.idSpotkania ?? data.id ?? "N/A"),
+    KrótkaNazwa: data.subjectShortName || data.nazwaSkroconaPrzedmiotu || null,
+    PełnaNazwa: data.subjectFullName || data.nazwaPelnaPrzedmiotu || null,
+    Typ: data.classType || data.listaIdZajecInstancji?.[0]?.typZajec || null,
+    Dzień: dayString,
+    Od: data.startTime || data.dataRozpoczecia,
+    Do: data.endTime || data.dataZakonczenia,
+    Wykładowcy: (data.lecturers || data.wykladowcy)?.map((w: any) => ({
+      id: w.id || w.idProwadzacego,
+      name: (w.name || w.stopienImieNazwisko)?.trim(),
+    })) || [],
+    Sale: (data.rooms || data.sale)?.map((s: any) => ({
+      id: s.id || s.idSali,
+      name: (s.name || s.nazwaSkrocona)?.trim(),
+    })) || [],
+  };
+  return details;
+};
+
+/**
+ * Generuje klucz unikalności (soft key) na podstawie niezmiennych pól zajęć.
+ * @param {IClassComparisonData} item Oczyszczony obiekt z prepareDataForComparison.
+ * @return {string} Unikalny klucz.
+ */
+const getSoftKey = (item: IClassComparisonData): string => {
+// Sortowanie list ID jest kluczowe, nawet jeśli już były posortowane w prepareDataForComparison,
+// Soft Key wymaga absolutnej stabilności formatu stringa.
+  const lecturerIds = item.lecturers.map((l: LecturerData) => l.id).sort((a, b) => a - b).join(",");
+  const roomIds = item.rooms.map((r: RoomData) => r.id).sort((a, b) => a - b).join(",");
+
+  return [
+    item.day,
+    item.startTime,
+    item.classType,
+    item.subjectShortName,
+    lecturerIds,
+    roomIds,
+  ].join("|");
+};
+

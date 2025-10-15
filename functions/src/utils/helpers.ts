@@ -37,10 +37,20 @@ export async function sendAdminNotification(title: string, message: string): Pro
   }
 }
 
-// Definicja, jak tekst z ustawień mapuje się na minuty
-export const NOTIFICATION_WINDOWS: {[key: string]: number} = {
-  "15 minut": 15,
-  "30 minut": 30,
-  "1 godzina": 60,
-  "2 godziny": 120,
+/**
+ * Funkcja pomocnicza do zwięzłego wyświetlania wartości w logach.
+ * @param {unknown} value Wartość do sformatowania jako string.
+ * @param {number} [maxLength=70] Maksymalna długość zwracanego stringa.
+ * @return {string} Sformatowana wartość jako string, skrócona jeśli przekracza maxLength.
+ */
+export const formatValueForLog = (value: unknown, maxLength = 70): string => {
+  try {
+    const str = JSON.stringify(value);
+    if (str.length > maxLength) {
+      return str.substring(0, maxLength - 3) + "... (Skrócono)";
+    }
+    return str;
+  } catch (e) {
+    return String(value);
+  }
 };

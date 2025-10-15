@@ -1,0 +1,138 @@
+// =================================================================
+// Przetwarzanie planu zajęć całego semestru w kolejce Cloud Tasks==
+// =================================================================
+
+import {LOCATION, PROJECT_ID, QUEUE_NAME} from "../config/firebase/settings";
+import {db} from "../utils/admin";
+import {getAllGroupIdsForSemester, processAndUpdateBatch} from "../utils/firestore";
+import {tasksClient} from "../utils/tasks";
+import {fetchScheduleForGroup, getSemesterInfo} from "../utils/universityService";
+import * as functions from "firebase-functions";
+import * as scheduler from "firebase-functions/v2/scheduler";
+
+
+// =================================================================
+// === FUNKCJA 1: Dyspozytor (zleca zadania) =======================
+// =================================================================
+
+export const scheduleSemesterUpdates = scheduler.onSchedule({
+  schedule: "every day 02:00", // Uruchamia się codziennie o 2 w nocy
+  timeZone: "Europe/Warsaw",
+  region: LOCATION,
+  timeoutSeconds: 540,
+  memory: "1GiB",
+}, async () => {
+  console.log("Rozpoczynanie zlecania zadań aktualizacji semestrów.");
+
+  const semesterInfo = getSemesterInfo(new Date());
+  if (!semesterInfo) {
+    console.log("Okres wakacyjny, nie zlecam zadań.");
+    return;
+  }
+
+  const groupIds = await getAllGroupIdsForSemester(semesterInfo.identifier);
+  if (groupIds.size === 0) {
+    console.log(`Brak grup do przetworzenia dla semestru ${semesterInfo.identifier}.`);
+    return;
+  }
+
+  const queuePath = tasksClient.queuePath(PROJECT_ID, LOCATION, QUEUE_NAME);
+  const targetUri = `https://${LOCATION}-${PROJECT_ID}.cloudfunctions.net/processSingleSemesterUpdate`;
+
+  const tasks = Array.from(groupIds).map((groupId) => {
+    const task = {
+      httpRequest: {
+        httpMethod: "POST" as const,
+        url: targetUri,
+        headers: {"Content-Type": "application/json"},
+        body: Buffer.from(JSON.stringify({groupId})).toString("base64"),
+      },
+    };
+    return tasksClient.createTask({parent: queuePath, task});
+  });
+
+  await Promise.all(tasks);
+  console.log(`✅ Zlecono ${tasks.length} zadań do kolejki '${QUEUE_NAME}'.`);
+});
+
+// =================================================================
+// === FUNKCJA 2: Pracownik (wykonuje jedno zadanie) ===============
+// =================================================================
+
+export const processSingleSemesterUpdate = functions.https.onRequest({
+  region: LOCATION,
+  timeoutSeconds: 540,
+  memory: "1GiB",
+},
+async (req, res) => {
+  // ✅ ZMIANA: Odczytaj groupId oraz opcjonalną, symulowaną datę
+  const {groupId, simulationDate} = req.body;
+
+  if (!groupId) {
+    console.error("Brak 'groupId' w ciele zapytania.");
+    res.status(400).send("Brak 'groupId'.");
+    return;
+  }
+
+  // Użyj daty symulowanej, jeśli została podana, w przeciwnym razie użyj bieżącej
+  const effectiveDate = simulationDate ? new Date(simulationDate) : new Date();
+
+  console.log(`Rozpoczynam pracę dla grupy: ${groupId}, data efektywna: ${effectiveDate.toISOString().split("T")[0]}`);
+  try {
+    const ONE_WEEK_IN_MS = 7 * 24 * 60 * 60 * 1000;
+
+    const monday = new Date(effectiveDate); // 1. Utwórz kopię daty
+    const day = monday.getDay();
+    const diff = monday.getDate() - day + (day === 0 ? -6 : 1);
+
+    monday.setDate(diff); // 2. Modyfikuj kopię, a nie oryginał
+    monday.setHours(0, 0, 0, 0);
+    const startTimestamp = monday.getTime();
+
+    let totalClassesSaved = 0;
+    let batch = db.batch();
+    let batchCounter = 0;
+    let emptyWeeksCounter = 0;
+    const MAX_EMPTY_WEEKS = 3;
+
+    for (let i = 0; i < 25; i++) {
+      const weekTimestamp = startTimestamp + i * ONE_WEEK_IN_MS;
+      const weekId = weekTimestamp.toString();
+      const scheduleItems = await fetchScheduleForGroup(groupId, weekTimestamp);
+
+      if (scheduleItems.length > 0) {
+        emptyWeeksCounter = 0;
+
+        // Używamy zoptymalizowanej funkcji porównującej/aktualizującej
+        const {batchOperationsCount: savedOps, changedClassesCount: changes} =
+        await processAndUpdateBatch(scheduleItems, groupId, weekId, batch);
+        totalClassesSaved += changes;
+        batchCounter += savedOps;
+      } else {
+        emptyWeeksCounter++;
+        if (emptyWeeksCounter >= MAX_EMPTY_WEEKS) {
+          console.log(`Koniec planu dla grupy ${groupId}. Zatrzymuję.`);
+          break;
+        }
+      }
+
+      if (batchCounter >= 450) {
+        await batch.commit();
+        batch = db.batch();
+        batchCounter = 0;
+      }
+    }
+
+    if (batchCounter > 0) {
+      await batch.commit();
+    }
+
+    console.log(`✅ Zakończono pracę dla grupy ${groupId}. Zapisano ${totalClassesSaved} zajęć.`);
+    res.status(200).send(`OK: ${groupId}`);
+    return;
+  } catch (error) {
+    console.error(`Błąd krytyczny podczas przetwarzania grupy ${groupId}:`, error);
+    res.status(500).send("Błąd wewnętrzny");
+    return;
+  }
+});

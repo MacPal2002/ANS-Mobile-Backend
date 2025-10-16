@@ -445,7 +445,6 @@ export async function cleanupInvalidTokens(
   response: messaging.BatchResponse,
   tokenInfos: TokenInfo[]
 ) {
-  const db = admin.firestore();
   const tokensToDelete: TokenInfo[] = [];
 
   response.responses.forEach((result, index) => {
@@ -469,7 +468,7 @@ export async function cleanupInvalidTokens(
     console.log(`Znaleziono ${tokensToDelete.length} nieaktywnych tokenów do usunięcia.`);
     // Stwórz listę wszystkich operacji usunięcia (obietnic)
     const deletePromises = tokensToDelete.map((info) => {
-      return db.collection("students").doc(info.userId).update({
+      return db.collection(COLLECTIONS.STUDENT_DEVICES).doc(info.userId).update({
         [`devices.${info.deviceId}`]: admin.firestore.FieldValue.delete(),
       });
     });

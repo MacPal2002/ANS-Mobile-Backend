@@ -1,4 +1,4 @@
-import * as functions from "firebase-functions";
+import * as scheduler from "firebase-functions/v2/scheduler";
 import {LOCATION} from "../config/firebase/settings";
 import {fetchScheduleForGroup, getSemesterInfo} from "../utils/universityService";
 import {getAllGroupIdsForSemester, processAndUpdateBatch} from "../utils/firestore";
@@ -9,7 +9,7 @@ import * as admin from "firebase-admin";
 // =================================================================
 // Szybka aktualizacja bieżącego tygodnia ==========================
 // =================================================================
-export const updateCurrentWeekSchedule = functions.scheduler.onSchedule({
+export const updateCurrentWeekSchedule = scheduler.onSchedule({
   schedule: "*/15 * * * *",
   timeZone: "Europe/Warsaw",
   region: LOCATION,

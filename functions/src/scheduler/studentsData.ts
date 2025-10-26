@@ -1,9 +1,10 @@
 import * as functions from "firebase-functions";
+import * as scheduler from "firebase-functions/v2/scheduler";
 import {LOCATION} from "../config/firebase/settings";
 import {db} from "../utils/admin";
 import {COLLECTIONS} from "../config/firebase/collections";
 
-export const clearObservedGroupsForStudent = functions.scheduler.onSchedule({
+export const clearObservedGroupsForStudent = scheduler.onSchedule({
   schedule: "0 0 1 10 *", // 1 października o północy czasu warszawskiego
   timeZone: "Europe/Warsaw",
   region: LOCATION,

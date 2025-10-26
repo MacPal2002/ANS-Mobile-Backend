@@ -68,3 +68,5 @@ node_modules/
 # dataconnect generated files
 .dataconnect
 .github/copilot-instructions.md
+functions/.DS_Store
+.DS_Store

@@ -2,8 +2,9 @@ import * as functions from "firebase-functions";
 import axios, {isAxiosError} from "axios";
 import {JSDOM} from "jsdom";
 import {AJAX_URL, LOGIN_URL, PERSONAL_DATA_TAB_URL, PROFILE_URL} from "../config/urls";
-import {accessSecret, reloginAndStoreSession} from "./secretManager";
+import {getValidSessionCookie, reloginAndStoreSession} from "./secretManager";
 import {sendAdminNotification} from "./helpers";
+import {ApiResponse, GroupTreeItem, RootApiResponseItem} from "../types";
 
 // =================================================================
 // Funkcje do komunikacji z systemem uczelni =======================
@@ -143,10 +144,11 @@ export async function getStudentGroup(sessionCookie: string): Promise<string> {
  * @param {number} weekStartTimestamp Znacznik czasu początku tygodnia (w milisekundach).
  * @return {Promise<any[]>} Lista terminów zajęć.
  */
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const fetchScheduleForGroup = async (groupId: number, weekStartTimestamp: number): Promise<any[]> => {
   // Pobierz najnowsze ciasteczko na początku każdego wywołania
-  const sessionCookie = await accessSecret("verbis-session-cookie");
+  const sessionCookie = await getValidSessionCookie();
   const headers = {
     "Accept": "application/json, text/javascript, */*; q=0.01",
     "Content-Type": "application/json",
@@ -170,7 +172,6 @@ export const fetchScheduleForGroup = async (groupId: number, weekStartTimestamp:
     if (response.data?.exceptionClass?.includes("LoginRequiredException")) {
       console.warn(`⚠️ Sesja wygasła dla grupy ${groupId}. Próba ponownego zalogowania i restart funkcji...`);
       await reloginAndStoreSession();
-      // Rzuć błąd, aby Firebase ponowiło całe zadanie CRON
       throw new Error("Sesja wygasła, wymagane ponowne uruchomienie przez Scheduler.");
     }
 
@@ -200,6 +201,90 @@ export const fetchScheduleForGroup = async (groupId: number, weekStartTimestamp:
     return []; // Zwróć pustą tablicę, aby nie przerywać dla np. błędu 500
   }
 };
+
+/**
+ * Pobiera pełne drzewo grup dziekańskich dla danego semestru.
+ * Obsługuje logikę dwuetapowego pobierania i odświeżania sesji.
+ * @param {number} winterSemesterId Identyfikator semestru zimowego.
+ */
+export async function fetchGroupTreeForSemester(
+  winterSemesterId: number
+): Promise<GroupTreeItem[]> {
+  let sessionCookie = await getValidSessionCookie();
+  let headers = {
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Content-Type": "application/json",
+    "Cookie": `JSESSIONID=${sessionCookie}`,
+    "X-Requested-With": "XMLHttpRequest",
+  };
+
+  // --- Krok 1: Pobieranie początkowych danych (jednostek głównych/kierunków) ---
+  const initialPayload = {
+    service: "Planowanie",
+    method: "getGrupySemestralneSemestru",
+    params: {idSemestru: winterSemesterId, cyklRoczny: true, itemIdList: ["r0"]},
+  };
+
+  let initialResponse;
+  try {
+    initialResponse = await axios.post<ApiResponse>(AJAX_URL, initialPayload, {headers});
+    // Jeśli sesja wygasła, rzuć błąd, aby przejść do bloku catch i ponowić
+    if (initialResponse.data.exceptionClass?.includes("LoginRequiredException")) {
+      throw new Error("LoginRequiredException (Call 1)");
+    }
+  } catch (error) {
+    functions.logger.warn("Pierwsze pobieranie grup nie powiodło się. Próba ponownego zalogowania...", error);
+    sessionCookie = await reloginAndStoreSession(); // Pobierz nową sesję
+    headers = {...headers, "Cookie": `JSESSIONID=${sessionCookie}`}; // Zaktualizuj nagłówki
+    initialResponse = await axios.post<ApiResponse>(AJAX_URL, initialPayload, {headers}); // Ponów próbę
+  }
+
+  const initialData = initialResponse.data;
+  if (initialData.exceptionClass) {
+    throw new Error(`Nie udało się pobrać jednostek (krok 1) nawet po ponowieniu: ${initialData.exceptionClass}`);
+  }
+
+  const rootItem = initialData.returnedValue?.items?.[0] as RootApiResponseItem;
+  if (!rootItem || !rootItem.children || rootItem.children.length === 0) {
+    functions.logger.warn("Nie znaleziono żadnych jednostek podrzędnych (kierunków).");
+    return []; // Zwróć pustą tablicę
+  }
+
+  const unitIds = rootItem.children.map((child) => child._reference);
+  functions.logger.info(`Znaleziono ${unitIds.length} jednostek głównych (kierunków).`);
+
+  // --- Krok 2: Pobieranie pełnego drzewa grup ---
+  const finalPayload = {
+    service: "Planowanie",
+    method: "getGrupySemestralneSemestru",
+    params: {idSemestru: winterSemesterId, cyklRoczny: true, itemIdList: unitIds},
+  };
+
+  let finalResponse;
+  try {
+    finalResponse = await axios.post<ApiResponse>(AJAX_URL, finalPayload, {headers});
+    if (finalResponse.data.exceptionClass?.includes("LoginRequiredException")) {
+      throw new Error("LoginRequiredException (Call 2)");
+    }
+  } catch (error) {
+    functions.logger.warn("Drugie pobieranie grup nie powiodło się. Próba ponownego zalogowania...", error);
+    sessionCookie = await reloginAndStoreSession(); // Pobierz nową sesję
+    headers = {...headers, "Cookie": `JSESSIONID=${sessionCookie}`}; // Zaktualizuj nagłówki
+    finalResponse = await axios.post<ApiResponse>(AJAX_URL, finalPayload, {headers}); // Ponów próbę
+  }
+
+  const finalData = finalResponse.data;
+  if (finalData.exceptionClass) {
+    throw new Error(`Nie udało się pobrać pełnego drzewa grup (krok 2): ${finalData.exceptionClass}`);
+  }
+
+  const allItems = finalData.returnedValue?.items as GroupTreeItem[];
+  if (!allItems) {
+    throw new Error("Otrzymano pustą odpowiedź przy pobieraniu pełnego drzewa grup.");
+  }
+
+  return allItems;
+}
 
 
 /**

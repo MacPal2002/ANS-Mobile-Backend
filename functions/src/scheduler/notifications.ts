@@ -1,13 +1,14 @@
 import {LOCATION} from "../config/firebase/settings";
+import * as scheduler from "firebase-functions/v2/scheduler";
 import * as functions from "firebase-functions";
-import {accessSecret} from "../utils/secretManager";
 import {processAndSendNotifications} from "../utils/notifications";
+import {getSecretTestKey} from "../utils/secretManager";
 
 // =================================================================
 // Funkcja do wysyłania powiadomień o nadchodzących zajęciach
 // =================================================================
 
-export const sendUpcomingClassNotifications = functions.scheduler.onSchedule({
+export const sendUpcomingClassNotifications = scheduler.onSchedule({
   schedule: "*/5 * * * *",
   timeZone: "Europe/Warsaw",
   region: LOCATION,
@@ -19,8 +20,7 @@ export const testUpcomingClassNotifications = functions.https.onRequest({
   region: LOCATION,
 },
 async (req, res) => {
-  // Sprawdź sekretny klucz w nagłówku
-  if (req.headers["x-secret-key"] !== await accessSecret("test-secret-key")) {
+  if (req.headers["x-secret-key"] !== await getSecretTestKey()) {
     res.status(401).send("Brak autoryzacji.");
     return;
   }

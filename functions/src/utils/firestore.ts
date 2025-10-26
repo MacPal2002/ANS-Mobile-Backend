@@ -7,7 +7,6 @@ import {formatValueForLog} from "./helpers";
 import {db} from "./admin";
 import {COLLECTIONS} from "../config/firebase/collections";
 
-
 // =================================================================
 // Funkcje pomocnicze do pracy z Firestore =========================
 // =================================================================
@@ -484,7 +483,6 @@ export async function cleanupInvalidTokens(
  * @param {any} item Dane zajęć (nowe lub istniejące).
  * @return {IClassComparisonData} Oczyszczony obiekt danych.
  */
-// eslint-disable-next-line max-len
 const prepareDataForComparison = (item: any): IClassComparisonData => {
   let startTimeMillis: number;
   let endTimeMillis: number;

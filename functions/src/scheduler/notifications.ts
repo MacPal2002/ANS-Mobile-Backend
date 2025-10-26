@@ -9,9 +9,11 @@ import {getSecretTestKey} from "../utils/secretManager";
 // =================================================================
 
 export const sendUpcomingClassNotifications = scheduler.onSchedule({
-  schedule: "*/5 * * * *",
+  schedule: "*/5 7-22 * * *",
   timeZone: "Europe/Warsaw",
   region: LOCATION,
+  timeoutSeconds: 240,
+  memory: "256MiB",
 }, async () => {
   await processAndSendNotifications(new Date());
 });

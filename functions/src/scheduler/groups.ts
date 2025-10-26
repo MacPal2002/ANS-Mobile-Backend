@@ -13,6 +13,8 @@ export const updateDeanGroups = scheduler.onSchedule({
   schedule: "0 1 1 10 *",
   timeZone: "Europe/Warsaw",
   region: LOCATION,
+  timeoutSeconds: 300,
+  memory: "512MiB",
 }, async () => {
   functions.logger.info("🚀 Rozpoczynam zadanie aktualizacji grup!");
 

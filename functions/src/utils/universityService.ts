@@ -198,7 +198,8 @@ export const fetchScheduleForGroup = async (groupId: number, weekStartTimestamp:
       `Wystąpił inny błąd podczas pobierania planu dla grupy ${groupId}: ${error}`,
       "Błąd pobierania planu",
     );
-    return []; // Zwróć pustą tablicę, aby nie przerywać dla np. błędu 500
+    // Rzuć błąd, aby Cloud Tasks ponowił zadanie.
+    throw new Error(`Inny błąd API dla grupy ${groupId}: ${error}`);
   }
 };
 

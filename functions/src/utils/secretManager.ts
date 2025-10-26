@@ -9,6 +9,11 @@ const secretManager = new SecretManagerServiceClient();
 const secretCache = new Map<string, string>();
 // ---------------------------------
 
+// --- ZAMEK GLOBALNY ---
+// Ta zmienna jest kluczowa. Jest współdzielona między wszystkimi wywołaniami
+// w jednej instancji Cloud Function.
+let isReloggingIn = false;
+
 /**
  * Pobiera ID projektu.
  * @return {string} ID projektu Google Cloud.
@@ -110,26 +115,52 @@ export async function reloginAndStoreSession(): Promise<string> {
   }
 }
 
+
 /**
- * GŁÓWNA FUNKCJA DO POBIERANIA SESJI
+ * Pobiera aktywny i ważny plik cookie sesji.
+ * Obsługuje cache'owanie, ponowne logowanie i mechanizm blokady, aby zapobiec wielokrotnemu logowaniu.
  */
 export async function getValidSessionCookie(): Promise<string> {
-  // 1. Sprawdź cache
+  // 1. ZAWSZE SPRAWDŹ ZAMEK
+  while (isReloggingIn) {
+    functions.logger.info("Czekam na zwolnienie zamka ponownego logowania...");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  // 2. SPRAWDŹ CACHE (BEZ PINGA)
   const cachedCookie = secretCache.get("verbis-session-cookie");
   if (cachedCookie) {
-    return cachedCookie;
+    return cachedCookie; // Zwróć "na ślepo"
   }
-  // 2. Cache pusty: Spróbuj pobrać z Secret Managera
+
+  // 3. SPRAWDŹ SECRET MANAGER (BEZ PINGA)
   try {
-    // getAndCacheSecret pobierze I zapisze w cache'u
-    return await getAndCacheSecret("verbis-session-cookie");
+    const storedCookie = await getAndCacheSecret("verbis-session-cookie");
+    if (storedCookie) {
+      return storedCookie; // Zwróć "na ślepo"
+    }
   } catch (error) {
-    // 3. Błąd (np. sesja nie istnieje): Zaloguj się, aby utworzyć
-    functions.logger.warn("Nie można pobrać sesji z Secret Managera, próba ponownego logowania.", error);
+    functions.logger.warn("Nie znaleziono sesji w Secret Managerze, przechodzę do logowania.");
+    // Błąd jest oczekiwany, jeśli sekret nie istnieje, idziemy dalej
+  }
+
+  // === KROK 4: BRAKUJĄCY FRAGMENT (NAJWAŻNIEJSZY) ===
+  // Sesji nie ma ani w cache, ani w managerze. Trzeba się zalogować.
+  try {
+    isReloggingIn = true; // <-- ZAŁÓŻ ZAMEK
+
+    functions.logger.warn("Brak sesji, rozpoczynam ponowne logowanie...");
+
+    // reloginAndStoreSession zaloguje się I zapisze cookie w cache
     return await reloginAndStoreSession();
+  } catch (error) {
+    functions.logger.error("KRYTYCZNE: Nie udało się ponownie zalogować podczas getValidSessionCookie!", error);
+    // Rzuć błąd, aby funkcja nadrzędna (np. Pracownik) wiedziała, że ma spróbować ponownie
+    throw new Error("Nie można uzyskać sesji konta serwisowego.");
+  } finally {
+    isReloggingIn = false; // <-- ZAWSZE ZDEJMIJ ZAMEK
   }
 }
-
 
 /**
  * Pobiera (i cache'uje) token bota Telegrama.
@@ -150,4 +181,3 @@ export async function getTelegramChatId(): Promise<string> {
 export async function getSecretTestKey(): Promise<string> {
   return getAndCacheSecret("test-secret-key");
 }
-

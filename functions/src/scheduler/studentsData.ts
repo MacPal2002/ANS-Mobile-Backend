@@ -8,6 +8,8 @@ export const clearObservedGroupsForStudent = scheduler.onSchedule({
   schedule: "0 0 1 10 *", // 1 października o północy czasu warszawskiego
   timeZone: "Europe/Warsaw",
   region: LOCATION,
+  timeoutSeconds: 300,
+  memory: "512MiB",
 }, async () => {
   const studentsSnapshot = await db.collection(COLLECTIONS.STUDENT_OBSERVED_GROUPS)
     .where("groups", "!=", [])

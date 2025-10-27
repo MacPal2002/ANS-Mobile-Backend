@@ -11,6 +11,7 @@ import {cleanupInvalidTokens} from "./firestore";
  * @param {Date} now Obecny czas, używany do określenia nadchodzących zajęć.
  */
 export async function processAndSendNotifications(now: Date) {
+  const channelId = "upcoming_class_channel";
   const semesterInfo = getSemesterInfo(now);
   if (!semesterInfo) {
     console.log(`Sprawdzono ${now.toISOString()}: Okres wakacyjny. Zatrzymuję funkcję wysyłania powiadomień.`);
@@ -89,14 +90,21 @@ export async function processAndSendNotifications(now: Date) {
 
     // Jeśli mamy tokeny do powiadomienia, wyślij wiadomość
     if (tokensToNotify.length > 0) {
+      const notificationTitle = "Nadchodzące zajęcia";
+      // eslint-disable-next-line max-len
+      const notificationBody = `${classData.subjectFullName} o ${startTime.toLocaleTimeString("pl-PL", {hour: "2-digit", minute: "2-digit", timeZone: "Europe/Warsaw"})} w sali ${classData.rooms[0]?.name || "N/A"}.`;
       const message = {
         notification: {
-          title: "Nadchodzące zajęcia",
-          // eslint-disable-next-line max-len
-          body: `${classData.subjectFullName} o ${startTime.toLocaleTimeString("pl-PL", {hour: "2-digit", minute: "2-digit", timeZone: "Europe/Warsaw"})} w sali ${classData.rooms[0]?.name || "N/A"}.`,
+          title: notificationTitle,
+          body: notificationBody,
         },
         android: {
           priority: "high" as const,
+          notification: {
+            channel_id: channelId,
+            title: notificationTitle,
+            body: notificationBody,
+          },
         },
         data: {
           "classId": classDoc.id,

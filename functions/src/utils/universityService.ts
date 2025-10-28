@@ -3,7 +3,7 @@ import axios, {isAxiosError} from "axios";
 import {JSDOM} from "jsdom";
 import {AJAX_URL, LOGIN_URL, PERSONAL_DATA_TAB_URL, PROFILE_URL} from "../config/urls";
 import {getValidSessionCookie, reloginAndStoreSession} from "./secretManager";
-import {sendAdminNotification} from "./helpers";
+import {sendAdminNotification, validateApiResponse} from "./helpers";
 import {ApiResponse, GroupTreeItem, RootApiResponseItem} from "../types";
 
 // =================================================================
@@ -168,38 +168,40 @@ export const fetchScheduleForGroup = async (groupId: number, weekStartTimestamp:
   try {
     const response = await axios.post(AJAX_URL, payload, {headers});
 
-    // Sprawdzanie błędu sesji
-    if (response.data?.exceptionClass?.includes("LoginRequiredException")) {
-      console.warn(`⚠️ Sesja wygasła dla grupy ${groupId}. Próba ponownego zalogowania i restart funkcji...`);
-      await reloginAndStoreSession();
-      throw new Error("Sesja wygasła, wymagane ponowne uruchomienie przez Scheduler.");
-    }
-
+    await validateApiResponse(response.data);
     return response.data?.returnedValue?.items || [];
   } catch (error) {
-    // Sprawdź, czy to błąd sieciowy wskazujący na blokadę
-    if (isAxiosError(error) && (
-      error.code === "ECONNRESET" || // Zerwano połączenie
-        error.response?.status === 403 || // Dostęp zabroniony
-        error.response?.status === 429 // Zbyt wiele zapytań
-    )) {
-      console.error(`Prawdopodobna blokada IP przy grupie ${groupId}. Przerywam i czekam na ponowienie.`, error.message);
+    if (error instanceof Error) {
+      if (error.message === "SessionExpiredRetry") {
+        // Sesja jest już naprawiona. Rzucamy błąd, aby Cloud Tasks ponowił zadanie.
+        throw new Error("Sesja została odświeżona, wymagane ponowne uruchomienie.");
+      }
+      if (isAxiosError(error) && (
+        error.code === "ECONNRESET" || // Zerwano połączenie
+          error.response?.status === 403 || // Dostęp zabroniony
+          error.response?.status === 429 // Zbyt wiele zapytań
+      )) {
+        console.error(`Prawdopodobna blokada IP przy grupie ${groupId}. Przerywam i czekam na ponowienie.`, error.message);
+        sendAdminNotification(
+          `Prawdopodobna blokada IP przy grupie ${groupId}. Przerywam i czekam na ponowienie.`,
+          "Błąd pobierania planu",
+        );
+        throw new Error(`Server block or connection reset detected: ${error.message}`);
+      }
+      console.error(`Wystąpił inny błąd podczas pobierania planu dla grupy ${groupId}:`, error);
       sendAdminNotification(
-        `Prawdopodobna blokada IP przy grupie ${groupId}. Przerywam i czekam na ponowienie.`,
+        `Wystąpił inny błąd podczas pobierania planu dla grupy ${groupId}: ${error.message}`,
         "Błąd pobierania planu",
       );
-      // Rzuć błąd, aby cała funkcja Cloud Function zakończyła się niepowodzeniem
-      throw new Error(`Server block or connection reset detected: ${error.message}`);
+      throw new Error(`Inny błąd API dla grupy ${groupId}: ${error.message}`);
+    } else {
+      console.error(`Wystąpił nieznany błąd dla grupy ${groupId}:`, error);
+      sendAdminNotification(
+        `Wystąpił nieznany błąd dla grupy ${groupId}: ${String(error)}`,
+        "Błąd pobierania planu",
+      );
+      throw new Error(`Nieznany błąd API dla grupy ${groupId}: ${String(error)}`);
     }
-
-    // Inne, mniej krytyczne błędy tylko logujemy i kontynuujemy
-    console.error(`Wystąpił inny błąd podczas pobierania planu dla grupy ${groupId}:`, error);
-    sendAdminNotification(
-      `Wystąpił inny błąd podczas pobierania planu dla grupy ${groupId}: ${error}`,
-      "Błąd pobierania planu",
-    );
-    // Rzuć błąd, aby Cloud Tasks ponowił zadanie.
-    throw new Error(`Inny błąd API dla grupy ${groupId}: ${error}`);
   }
 };
 
@@ -229,8 +231,9 @@ export async function fetchGroupTreeForSemester(
   let initialResponse;
   try {
     initialResponse = await axios.post<ApiResponse>(AJAX_URL, initialPayload, {headers});
+    await validateApiResponse(initialResponse.data);
     // Jeśli sesja wygasła, rzuć błąd, aby przejść do bloku catch i ponowić
-    if (initialResponse.data.exceptionClass?.includes("LoginRequiredException")) {
+    if (initialResponse.data.exceptionClass === "org.objectledge.web.mvc.security.LoginRequiredException") {
       throw new Error("LoginRequiredException (Call 1)");
     }
   } catch (error) {
@@ -264,7 +267,7 @@ export async function fetchGroupTreeForSemester(
   let finalResponse;
   try {
     finalResponse = await axios.post<ApiResponse>(AJAX_URL, finalPayload, {headers});
-    if (finalResponse.data.exceptionClass?.includes("LoginRequiredException")) {
+    if (finalResponse.data.exceptionClass === "org.objectledge.web.mvc.security.LoginRequiredException") {
       throw new Error("LoginRequiredException (Call 2)");
     }
   } catch (error) {
@@ -329,3 +332,5 @@ export const getSemesterInfo = (date: Date = new Date()) => {
   // Przerwa wakacyjna (lipiec, sierpień, wrzesień)
   return null;
 };
+
+

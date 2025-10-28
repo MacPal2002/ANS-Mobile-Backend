@@ -1,6 +1,7 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import * as functions from "firebase-functions";
 import axios, {isAxiosError} from "axios";
-import {getTelegramBotToken, getTelegramChatId} from "./secretManager";
+import {getTelegramBotToken, getTelegramChatId, reloginAndStoreSession} from "./secretManager";
 
 /**
  * Wysyła powiadomienie do administratora o błędzie krytycznym na Telegrama.
@@ -85,3 +86,30 @@ export const handleError = async (error: unknown, contextMessage: string) => {
   );
   throw error;
 };
+
+
+/**
+ * Waliduje odpowiedź z API. Rzuca błąd, jeśli sesja wygasła lub wystąpił inny błąd API.
+ * @param {any} responseData - Obiekt `response.data` z axiosa.
+ */
+export async function validateApiResponse(responseData: any) { // Zmieniona nazwa
+  const exception = responseData?.exceptionClass;
+
+  // 1. Sesja wygasła - napraw i rzuć błąd, aby ponowić
+  if (exception === "org.objectledge.web.mvc.security.LoginRequiredException" || exception === "java.lang.SecurityException") {
+    functions.logger.warn("⚠️ Sesja konta serwisowego wygasła. Uruchamiam ponowne logowanie...");
+    await reloginAndStoreSession(); // Napraw sesję
+    // Rzuć specyficzny błąd, aby poinformować `fetchScheduleForGroup`
+    throw new Error("SessionExpiredRetry");
+  }
+
+  // 2. Inny błąd API - rzuć błąd
+  if (exception !== null) {
+    functions.logger.error("API zwróciło błąd (inny niż sesja):", exception);
+    sendAdminNotification(
+      "Błąd API (nie sesja)",
+      `API zwróciło błąd: ${exception}`
+    );
+    throw new Error(`ApiError: ${exception}`);
+  }
+}

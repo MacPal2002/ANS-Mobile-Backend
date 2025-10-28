@@ -12,6 +12,8 @@ export const renewVerbisSession = scheduler.onSchedule(
     schedule: "every 15 minutes",
     timeZone: "Europe/Warsaw",
     region: LOCATION,
+    timeoutSeconds: 60, // 1 minuta (i tak trwa 2 sekundy)
+    memory: "128MiB",
   },
   async () => {
     try {

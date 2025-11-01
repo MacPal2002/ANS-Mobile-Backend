@@ -1,27 +1,30 @@
-import * as admin from "firebase-admin";
 import * as functions from "firebase-functions";
-import {GroupTreeItem, ProcessingContext} from "../types"; // Importuj nasze typy
+import {GroupTreeItem, ProcessingContext} from "../types";
 import {COLLECTIONS} from "../config/firebase/collections";
-
-const db = admin.firestore();
+import {WriteBatch} from "firebase-admin/firestore";
+import {db} from "./admin";
 
 /**
- * Przetwarza pobrane drzewo grup i przygotowuje paczkę (batch) do zapisu w Firestore.
- * @param {GroupTreeItem[]} allItems - Tablica węzłów drzewa grup z API.
- * @param {string} academicYear - Rok akademicki (np. "2024-2025").
- * @param {number} academicYearStart - Rok rozpoczęcia (np. 2024).
- * @return {{batch: admin.firestore.WriteBatch, groupsFoundCounter: number}} Obiekt zawierający batch i liczbę znalezionych grup.
+ * Przetwarza pobrane drzewo grup i przygotowuje TABLICĘ paczek (batches) do zapisu w Firestore,
+ * szanując limit 500 operacji.
+ *
+ * @param {GroupTreeItem[]} allItems - Tablica elementów drzewa grup do przetworzenia.
+ * @param {string} academicYear - Rok akademicki w formacie tekstowym (np. "2023-2024").
+ * @param {number} academicYearStart - Rok rozpoczęcia roku akademickiego (np. 2023).
+ * @return {WriteBatch[]} Tablica paczek (batches) do zapisu w Firestore.
  */
 export function processGroupTree(
   allItems: GroupTreeItem[],
   academicYear: string,
   academicYearStart: number
-) {
-  const batch = db.batch();
-  let groupsFoundCounter = 0;
+): WriteBatch[] {
+  const batches: WriteBatch[] = [];
+  let currentBatch = db.batch();
+  let operationCounter = 0;
+  const BATCH_LIMIT = 490;
   const processedPaths = new Set<string>();
 
-  // Definicja funkcji rekurencyjnej (skopiowana z Twojego kodu)
+  // Definicja funkcji rekurencyjnej
   const processNode = (node: GroupTreeItem, context: ProcessingContext) => {
     const newContext = {...context};
 
@@ -34,7 +37,6 @@ export function processGroupTree(
     } else if (node.type === "grupadziekanska" && typeof node.id === "number") {
       const originalLabel = node.label;
       let groupName = node.label;
-
       let semesterIdentifier: string | null = null;
       const semesterMatch = groupName.match(/\s\(([ZL])\)$/);
 
@@ -59,22 +61,28 @@ export function processGroupTree(
         const fieldOfStudyDocPath = `${COLLECTIONS.DEAN_GROUPS}/${academicYear}/${semesterIdentifier}/${fieldOfStudy}`;
         const semesterDocPath = `${COLLECTIONS.DEAN_GROUPS}/${academicYear}/${semesterIdentifier}/${fieldOfStudy}/${studyMode}/${semester}`;
 
-        batch.set(db.doc(yearDocPath), {lastUpdated: new Date()}, {merge: true});
-        batch.set(db.doc(fieldOfStudyDocPath), {lastUpdated: new Date()}, {merge: true});
-
         const uniqueGroupKey = `${semesterDocPath}/${groupName}`;
         if (!processedPaths.has(uniqueGroupKey)) {
           processedPaths.add(uniqueGroupKey);
-          groupsFoundCounter++;
+
+          if (operationCounter + 4 > BATCH_LIMIT) {
+            batches.push(currentBatch);
+            currentBatch = db.batch();
+            operationCounter = 0;
+          }
+          currentBatch.set(db.doc(yearDocPath), {lastUpdated: new Date()}, {merge: true});
+          currentBatch.set(db.doc(fieldOfStudyDocPath), {lastUpdated: new Date()}, {merge: true});
 
           const docRef = db.doc(semesterDocPath);
-          batch.set(docRef, {[groupName]: node.id}, {merge: true});
+          currentBatch.set(docRef, {[groupName]: node.id}, {merge: true});
 
           const groupDetailsRef = db.collection(COLLECTIONS.GROUP_DETAILS).doc(String(node.id));
-          batch.set(groupDetailsRef, {
+          currentBatch.set(groupDetailsRef, {
             groupName: groupName,
             fullPath: semesterDocPath,
           }, {merge: true});
+
+          operationCounter += 4;
         }
       } else {
         functions.logger.warn(`Pominięto grupę '${originalLabel}', brak kontekstu.`, {
@@ -89,13 +97,13 @@ export function processGroupTree(
         processNode(child, newContext);
       }
     }
-  }; // Koniec funkcji processNode
-
-  // Rozpocznij przetwarzanie
+  };
   for (const item of allItems) {
     processNode(item, {});
   }
 
-  // Zwróć gotowy batch i wynik
-  return {batch, groupsFoundCounter};
+  if (operationCounter > 0) {
+    batches.push(currentBatch);
+  }
+  return batches;
 }

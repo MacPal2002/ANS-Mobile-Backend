@@ -1,8 +1,11 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import {LOCATION} from "../config/firebase/settings";
 import * as functions from "firebase-functions";
 import {db} from "../utils/admin";
-import {buildTreeForCollection} from "../utils/firestore";
 import {COLLECTIONS} from "../config/firebase/collections";
+
+let cachedDeanGroupTree: any | null = null;
+let cacheTimestamp: number | null = null;
 
 export const getGroupDetails = functions.https.onCall({
   region: LOCATION,
@@ -40,13 +43,32 @@ export const getGroupDetails = functions.https.onCall({
 export const getAllDeanGroups = functions.https.onCall({
   region: LOCATION,
 }, async () => {
+  // === KROK 1: SPRAWDŹ CACHE W PAMIĘCI ===
+  // Sprawdź, czy cache istnieje i nie jest starszy niż 1 godzina
+  if (cachedDeanGroupTree && cacheTimestamp && (Date.now() - cacheTimestamp < 3600000)) {
+    functions.logger.info("Zwracam drzewo grup z CACHE'A PAMIĘCI (0 odczytów).");
+    return cachedDeanGroupTree;
+  }
+
   try {
-    const deanGroupsRef = db.collection(COLLECTIONS.DEAN_GROUPS);
-    const groupTree = await buildTreeForCollection(deanGroupsRef);
-    return {tree: groupTree};
+    // === KROK 2: POBIERZ ZBUDOWANY JSON Z FIRESTORE ===
+    functions.logger.warn("CACHE MISS: Pobieram drzewo grup z Firestore (1 odczyt).");
+    const configRef = db.collection("config").doc("deanGroupsTree");
+    const doc = await configRef.get();
+
+    if (!doc.exists) {
+      functions.logger.error("Krytyczny błąd: Dokument 'config/deanGroupsTree' nie istnieje.");
+      throw new functions.https.HttpsError("not-found", "Nie znaleziono konfiguracji drzewa grup.");
+    }
+    const treeData = doc.data();
+
+    // === KROK 3: ZAPISZ W CACHE'U PAMIĘCI ===
+    cachedDeanGroupTree = treeData;
+    cacheTimestamp = Date.now();
+    return treeData;
   } catch (error) {
-    console.error("Błąd podczas budowania drzewa grup:", error);
-    throw new functions.https.HttpsError("internal", "Błąd serwera przy budowaniu drzewa grup.");
+    console.error("Błąd podczas pobierania drzewa grup:", error);
+    throw new functions.https.HttpsError("internal", "Błąd serwera przy pobieraniu drzewa grup.");
   }
 });
 

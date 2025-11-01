@@ -1,7 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as functions from "firebase-functions";
 import axios, {isAxiosError} from "axios";
-import {getTelegramBotToken, getTelegramChatId, reloginAndStoreSession} from "./secretManager";
+import {getTelegramBotToken, getTelegramChatId, reloginAndStoreSession} from "./secrets";
+import * as crypto from "crypto";
 
 /**
  * Wysyła powiadomienie do administratora o błędzie krytycznym na Telegrama.
@@ -112,4 +113,33 @@ export async function validateApiResponse(responseData: any) { // Zmieniona nazw
     );
     throw new Error(`ApiError: ${exception}`);
   }
+}
+/**
+ * Szyfruje tekst za pomocą algorytmu AES-256-CBC.
+ * @param {string} text Tekst do zaszyfrowania.
+ * @param {string} secretKey Klucz szyfrujący (32 bajty).
+ * @return {string} Zaszyfrowany tekst w formacie IV:zaszyfrowany.
+ */
+export function encrypt(text: string, secretKey: string): string {
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv("aes-256-cbc", Buffer.from(secretKey), iv);
+  let encrypted = cipher.update(text, "utf8", "hex");
+  encrypted += cipher.final("hex");
+  return iv.toString("hex") + ":" + encrypted;
+}
+
+
+/**
+ * Odszyfrowuje tekst zaszyfrowany algorytmem AES-256-CBC.
+ * @param {string} text Zaszyfrowany tekst w formacie IV:zaszyfrowany.
+ * @param {string} secretKey Klucz szyfrujący (32 bajty).
+ * @return {string} Odszyfrowany tekst.
+ */
+export function decrypt(text: string, secretKey: string): string {
+  const [ivHex, encrypted] = text.split(":");
+  const iv = Buffer.from(ivHex, "hex");
+  const decipher = crypto.createDecipheriv("aes-256-cbc", Buffer.from(secretKey), iv);
+  let decrypted = decipher.update(encrypted, "hex", "utf8");
+  decrypted += decipher.final("utf8");
+  return decrypted;
 }

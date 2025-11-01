@@ -1,11 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import deepEqual from "fast-deep-equal";
-import * as admin from "firebase-admin";
 import {messaging} from "firebase-admin";
 import {IClassComparisonData, IClassSaveData, TokenInfo, LecturerData, RoomData, ComparisonKey} from "../types";
-import {formatValueForLog} from "./helpers";
-import {db} from "./admin";
+import {decrypt, encrypt, formatValueForLog} from "./helpers";
+import {db, firestore} from "./admin";
 import {COLLECTIONS} from "../config/firebase/collections";
+import {WriteBatch, DocumentSnapshot} from "firebase-admin/firestore";
+import {encryptionKey} from "./env";
 
 // =================================================================
 // Funkcje pomocnicze do pracy z Firestore =========================
@@ -51,9 +52,8 @@ export const getAllGroupIds = async (): Promise<Set<number>> => {
 };
 
 export const processAndUpdateBatch = async (
-  items: any[], groupId: number, weekId: string, batch: admin.firestore.WriteBatch,
+  items: any[], groupId: number, weekId: string, batch: WriteBatch,
 ): Promise<{ batchOperationsCount: number, changedClassesCount: number }> => {
-  const db = admin.firestore();
   let batchOperationsCount = 0;
   let changedClassesCount = 0;
 
@@ -106,8 +106,8 @@ export const processAndUpdateBatch = async (
     const classDataToSave: IClassSaveData = {
       subjectFullName: newItem.nazwaPelnaPrzedmiotu?.trim() || null,
       subjectShortName: newItem.nazwaSkroconaPrzedmiotu?.trim() || null,
-      startTime: admin.firestore.Timestamp.fromMillis(newItem.dataRozpoczecia),
-      endTime: admin.firestore.Timestamp.fromMillis(newItem.dataZakonczenia),
+      startTime: firestore.Timestamp.fromMillis(newItem.dataRozpoczecia),
+      endTime: firestore.Timestamp.fromMillis(newItem.dataZakonczenia),
       day: dayString,
       classType: newItem.listaIdZajecInstancji?.[0]?.typZajec || null,
       weekId,
@@ -120,7 +120,7 @@ export const processAndUpdateBatch = async (
         name: s.nazwaSkrocona?.trim(),
       })) || [],
       sourceGroupId: groupId,
-      lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+      lastUpdated: firestore.FieldValue.serverTimestamp(),
     };
     // ------------------------------
 
@@ -228,7 +228,7 @@ export const processAndUpdateBatch = async (
  * @return {Promise<number>} Liczba elementów pomyślnie dodanych do batcha.
  */
 export const processAndSaveBatch = async (
-  items: any[], groupId: number, weekId: string, batch: admin.firestore.WriteBatch,
+  items: any[], groupId: number, weekId: string, batch: WriteBatch,
 ): Promise<number> => {
   let itemsInBatch = 0;
   for (const item of items) {
@@ -241,15 +241,15 @@ export const processAndSaveBatch = async (
     const classData = {
       subjectFullName: item.nazwaPelnaPrzedmiotu || null,
       subjectShortName: item.nazwaSkroconaPrzedmiotu || null,
-      startTime: admin.firestore.Timestamp.fromMillis(item.dataRozpoczecia),
-      endTime: admin.firestore.Timestamp.fromMillis(item.dataZakonczenia),
+      startTime: firestore.Timestamp.fromMillis(item.dataRozpoczecia),
+      endTime: firestore.Timestamp.fromMillis(item.dataZakonczenia),
       day: dayString,
       classType: item.listaIdZajecInstancji?.[0]?.typZajec || null,
       weekId: weekId,
       lecturers: item.wykladowcy?.map((w: any) => ({id: w.idProwadzacego, name: w.stopienImieNazwisko})) || [],
       rooms: item.sale?.map((s: any) => ({id: s.idSali, name: s.nazwaSkrocona})) || [],
       sourceGroupId: groupId,
-      lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+      lastUpdated: firestore.FieldValue.serverTimestamp(),
     };
 
     // eslint-disable-next-line max-len
@@ -368,7 +368,7 @@ export async function getScheduleForWeek(groupId: number, weekId: string): Promi
  * @param {FirebaseFirestore.DocumentSnapshot} doc Dokument Firestore.
  * @return {Promise<any>} Obiekt reprezentujący węzeł w drzewie.
  */
-async function buildTreeForDocument(doc: admin.firestore.DocumentSnapshot): Promise<any> {
+async function buildTreeForDocument(doc: DocumentSnapshot): Promise<any> {
   const subcollections = await doc.ref.listCollections();
 
   // Przypadek 1: Ten dokument jest "liściem" zawierającym mapę grup (np. "semestr 6")
@@ -431,7 +431,7 @@ async function buildTreeForDocument(doc: admin.firestore.DocumentSnapshot): Prom
 export async function buildTreeForCollection(collectionRef: { get: () => any; }) {
   const snapshot = await collectionRef.get();
   if (snapshot.empty) return [];
-  const promises = snapshot.docs.map((doc: admin.firestore.DocumentSnapshot) => buildTreeForDocument(doc));
+  const promises = snapshot.docs.map((doc: DocumentSnapshot) => buildTreeForDocument(doc));
   return Promise.all(promises);
 }
 
@@ -468,7 +468,7 @@ export async function cleanupInvalidTokens(
     // Stwórz listę wszystkich operacji usunięcia (obietnic)
     const deletePromises = tokensToDelete.map((info) => {
       return db.collection(COLLECTIONS.STUDENT_DEVICES).doc(info.userId).update({
-        [`devices.${info.deviceId}`]: admin.firestore.FieldValue.delete(),
+        [`devices.${info.deviceId}`]: firestore.FieldValue.delete(),
       });
     });
 
@@ -564,6 +564,35 @@ const formatClassDetails = (data: any, docId?: string) => {
   };
   return details;
 };
+
+/**
+ * Szyfruje przekazany ciąg sesji i zapisuje go w bazie Firestore w kolekcji "sessions"
+ * pod dokumentem o ID "verbis". Przechowywany jest zaszyfrowany token oraz aktualny znacznik czasu serwera.
+ *
+ * @param {string} session - Ciąg sesji do zaszyfrowania i zapisania.
+ * @return {Promise<void>} Promise, która kończy się po zapisaniu sesji w Firestore.
+ */
+export async function saveSessionToFirestore(session: string) {
+  const key = encryptionKey.value();
+  const encrypted = encrypt(session, key);
+  await db.collection("sessions").doc("verbis").set({
+    token: encrypted,
+    updatedAt: firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+/**
+ * Pobiera zaszyfrowany token sesji z kolekcji "sessions" (dokument "verbis"),
+ * odszyfrowuje go przy użyciu klucza z konfiguracji i zwraca odszyfrowany token jako string.
+ *
+ * @return {Promise<string | null>} Odszyfrowany token sesji, jeśli istnieje; w przeciwnym razie `null`.
+ */
+export async function getSessionFromFirestore(): Promise<string | null> {
+  const key = encryptionKey.value();
+  const doc = await db.collection("sessions").doc("verbis").get();
+  if (!doc.exists) return null;
+  return decrypt(doc.data()?.token, key);
+}
 
 /**
  * Generuje klucz unikalności (soft key) na podstawie niezmiennych pól zajęć.

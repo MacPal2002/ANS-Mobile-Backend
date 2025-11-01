@@ -2,7 +2,7 @@ import * as functions from "firebase-functions";
 import axios, {isAxiosError} from "axios";
 import {JSDOM} from "jsdom";
 import {AJAX_URL, LOGIN_URL, PERSONAL_DATA_TAB_URL, PROFILE_URL} from "../config/urls";
-import {getValidSessionCookie, reloginAndStoreSession} from "./secretManager";
+import {getValidSessionCookie, reloginAndStoreSession} from "./secrets";
 import {sendAdminNotification, validateApiResponse} from "./helpers";
 import {ApiResponse, GroupTreeItem, RootApiResponseItem} from "../types";
 

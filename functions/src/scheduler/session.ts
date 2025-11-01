@@ -1,7 +1,7 @@
 import * as functions from "firebase-functions";
 import * as scheduler from "firebase-functions/v2/scheduler";
 import {LOCATION} from "../config/firebase/settings";
-import {reloginAndStoreSession, getValidSessionCookie} from "../utils/secretManager";
+import {reloginAndStoreSession, getValidSessionCookie} from "../utils/secrets";
 import axios from "axios";
 import {AJAX_URL} from "../config/urls";
 import {sendAdminNotification} from "../utils/helpers";
@@ -13,7 +13,7 @@ export const renewVerbisSession = scheduler.onSchedule(
     timeZone: "Europe/Warsaw",
     region: LOCATION,
     timeoutSeconds: 60, // 1 minuta (i tak trwa 2 sekundy)
-    memory: "128MiB",
+    memory: "256MiB",
   },
   async () => {
     try {

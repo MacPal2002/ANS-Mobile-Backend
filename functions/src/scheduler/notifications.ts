@@ -2,7 +2,7 @@ import {LOCATION} from "../config/firebase/settings";
 import * as scheduler from "firebase-functions/v2/scheduler";
 import * as functions from "firebase-functions";
 import {processAndSendNotifications} from "../utils/notifications";
-import {getSecretTestKey} from "../utils/secretManager";
+import {getSecretTestKey} from "../utils/secrets";
 
 // =================================================================
 // Funkcja do wysyłania powiadomień o nadchodzących zajęciach

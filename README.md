@@ -1,4 +1,3 @@
-```markdown
 # ANS Mobile Backend
 
 This repository is the backend for the ANS Mobile application — a Firebase Cloud Functions TypeScript project that implements authentication, HTTP endpoints, scheduled jobs and background task handlers used by the mobile client.
@@ -31,5 +30,3 @@ Top-level of the Firebase functions source (functions/src):
 - utils/ — helper utilities: wrappers for admin, HTTP, parsing, secret manager
 - types.ts — TypeScript types & payload interfaces used across the codebase
 - index.ts — function exports and global initialization
-
-```

@@ -2,10 +2,6 @@ import * as admin from "firebase-admin";
 
 // Ten plik przechowuje wszystkie niestandardowe typy i interfejsy
 
-/**
- * Definiuje strukturę danych wejściowych oczekiwanych przez
- * funkcję `registerStudent`.
- */
 export interface RegisterStudentData {
   email: string;
   password: string;
@@ -44,7 +40,6 @@ export interface RoomData {
 }
 
 export type ComparisonKey = keyof IClassComparisonData;
-/** Struktura danych używana po oczyszczeniu do PORÓWNANIA (prepareDataForComparison) */
 export interface IClassComparisonData {
   subjectFullName: string | null;
   subjectShortName: string | null;
@@ -56,7 +51,6 @@ export interface IClassComparisonData {
   rooms: RoomData[];
 }
 
-/** Struktura danych używana do ZAPISU do Firestore (classDataToSave) */
 export interface IClassSaveData {
   subjectFullName: string | null;
   subjectShortName: string | null;

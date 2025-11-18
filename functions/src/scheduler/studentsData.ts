@@ -5,7 +5,7 @@ import {db} from "../utils/admin";
 import {COLLECTIONS} from "../config/firebase/collections";
 
 export const clearObservedGroupsForStudent = scheduler.onSchedule({
-  schedule: "0 0 1 10 *", // 1 października o północy czasu warszawskiego
+  schedule: "0 0 1 10 *",
   timeZone: "Europe/Warsaw",
   region: LOCATION,
   timeoutSeconds: 300,

@@ -20,7 +20,7 @@ export const updateDeanGroups = scheduler.onSchedule({
   timeoutSeconds: 300,
   memory: "512MiB",
 }, async () => {
-  functions.logger.info("🚀 Rozpoczynam zadanie aktualizacji grup!");
+  functions.logger.info("Rozpoczynam zadanie aktualizacji grup!");
 
   try {
     const semesterInfo = getSemesterInfo(new Date());
@@ -37,7 +37,6 @@ export const updateDeanGroups = scheduler.onSchedule({
     const winterSemesterId = 90 + (academicYearStart - 2025) * 2;
     functions.logger.info(`Przetwarzanie dla roku akademickiego: ${academicYear}`);
 
-    // === KROK 2: Pobieranie danych ===
     const allItems = await fetchGroupTreeForSemester(winterSemesterId);
 
     if (allItems.length === 0) {
@@ -46,38 +45,33 @@ export const updateDeanGroups = scheduler.onSchedule({
     }
     functions.logger.info(`Pomyślnie pobrano ${allItems.length} węzłów drzewa grup. Przetwarzanie...`);
 
-    // === KROK 3: Przetwarzanie danych ===
     const batches = processGroupTree(
       allItems,
       academicYear,
       academicYearStart
     );
 
-    // === KROK 4: Zapis do bazy ===
     if (batches.length > 0) {
       await Promise.all(
         batches.map((batch: WriteBatch) => batch.commit())
       );
       functions.logger.info(
-        `✅ Zakończono sukcesem! Zapisano ${batches.length} paczek danych dla roku ${academicYear}.`
+        `Zakończono sukcesem! Zapisano ${batches.length} paczek danych dla roku ${academicYear}.`
       );
     } else {
       functions.logger.warn("Nie znaleziono żadnych grup do zapisania.");
-      // Nie przerywamy, bo może chcemy tylko odbudować JSON
     }
 
-    // === KROK 5: ZBUDUJ I ZAPISZ DRZEWO JSON ===
     functions.logger.info("Generowanie zbuforowanego drzewa JSON...");
     const deanGroupsRef = db.collection(COLLECTIONS.DEAN_GROUPS);
     const groupTree = await buildTreeForCollection(deanGroupsRef);
 
-    // 3. Zapisz całe drzewo jako jeden dokument
     const configRef = db.collection("config").doc("deanGroupsTree");
     await configRef.set({
       tree: groupTree,
       lastUpdated: firestore.FieldValue.serverTimestamp(),
     });
-    functions.logger.info("✅ Pomyślnie zapisano zbuforowane drzewo JSON w 'config/deanGroupsTree'.");
+    functions.logger.info("Pomyślnie zapisano zbuforowane drzewo JSON w 'config/deanGroupsTree'.");
   } catch (error) {
     await handleError(error, "Wystąpił błąd ogólny podczas aktualizacji grup dziekańskich.");
   }

@@ -43,7 +43,6 @@ export const getGroupDetails = functions.https.onCall({
 export const getAllDeanGroups = functions.https.onCall({
   region: LOCATION,
 }, async () => {
-  // === KROK 1: SPRAWDŹ CACHE W PAMIĘCI ===
   // Sprawdź, czy cache istnieje i nie jest starszy niż 1 godzina
   if (cachedDeanGroupTree && cacheTimestamp && (Date.now() - cacheTimestamp < 3600000)) {
     functions.logger.info("Zwracam drzewo grup z CACHE'A PAMIĘCI (0 odczytów).");
@@ -51,7 +50,6 @@ export const getAllDeanGroups = functions.https.onCall({
   }
 
   try {
-    // === KROK 2: POBIERZ ZBUDOWANY JSON Z FIRESTORE ===
     functions.logger.warn("CACHE MISS: Pobieram drzewo grup z Firestore (1 odczyt).");
     const configRef = db.collection("config").doc("deanGroupsTree");
     const doc = await configRef.get();
@@ -62,7 +60,6 @@ export const getAllDeanGroups = functions.https.onCall({
     }
     const treeData = doc.data();
 
-    // === KROK 3: ZAPISZ W CACHE'U PAMIĘCI ===
     cachedDeanGroupTree = treeData;
     cacheTimestamp = Date.now();
     return treeData;

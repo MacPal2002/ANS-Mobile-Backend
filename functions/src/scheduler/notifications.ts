@@ -26,11 +26,9 @@ async (req, res) => {
     res.status(401).send("Brak autoryzacji.");
     return;
   }
-  // Odczytaj datę z requestu lub użyj bieżącej
   const {dateString} = req.body;
   const now = dateString ? new Date(dateString) : new Date();
 
-  // Wywołaj tę samą logikę z podaną datą
   await processAndSendNotifications(now);
   res.status(200).send(`Funkcja testowa wykonana dla daty: ${now.toISOString()}`);
 });

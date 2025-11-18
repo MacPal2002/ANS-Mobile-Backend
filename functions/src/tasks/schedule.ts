@@ -56,7 +56,7 @@ export const scheduleFastSemesterUpdates = scheduler.onSchedule({
   });
 
   await Promise.all(tasks);
-  console.log(`✅ Zlecono ${tasks.length} SZYBKICH zadań do kolejki '${FAST_QUEUE_NAME}'.`);
+  console.log(`Zlecono ${tasks.length} SZYBKICH zadań do kolejki '${FAST_QUEUE_NAME}'.`);
 });
 
 export const scheduleFullSemesterUpdates = scheduler.onSchedule({
@@ -100,7 +100,7 @@ export const scheduleFullSemesterUpdates = scheduler.onSchedule({
   });
 
   await Promise.all(tasks);
-  console.log(`✅ Zlecono ${tasks.length} PEŁNYCH zadań do kolejki '${QUEUE_NAME}'.`);
+  console.log(`Zlecono ${tasks.length} PEŁNYCH zadań do kolejki '${QUEUE_NAME}'.`);
 });
 // =================================================================
 // === Pracownik (wykonuje jedno zadanie) ===============
@@ -112,7 +112,6 @@ export const processSingleSemesterUpdate = functions.https.onRequest({
   memory: "256MiB",
 },
 async (req, res) => {
-  // ✅ ZMIANA: Odczytaj groupId oraz opcjonalną, symulowaną datę
   const {groupId, simulationDate, weeksToScan = 2} = req.body;
 
   if (!groupId) {
@@ -121,18 +120,17 @@ async (req, res) => {
     return;
   }
 
-  // Użyj daty symulowanej, jeśli została podana, w przeciwnym razie użyj bieżącej
   const effectiveDate = simulationDate ? new Date(simulationDate) : new Date();
 
   console.log(`Rozpoczynam pracę dla grupy: ${groupId}, data efektywna: ${effectiveDate.toISOString().split("T")[0]}`);
   try {
     const ONE_WEEK_IN_MS = 7 * 24 * 60 * 60 * 1000;
 
-    const monday = new Date(effectiveDate); // 1. Utwórz kopię daty
+    const monday = new Date(effectiveDate);
     const day = monday.getDay();
     const diff = monday.getDate() - day + (day === 0 ? -6 : 1);
 
-    monday.setDate(diff); // 2. Modyfikuj kopię, a nie oryginał
+    monday.setDate(diff);
     monday.setHours(0, 0, 0, 0);
     const startTimestamp = monday.getTime();
 
@@ -150,7 +148,6 @@ async (req, res) => {
       if (scheduleItems.length > 0) {
         emptyWeeksCounter = 0;
 
-        // Używamy zoptymalizowanej funkcji porównującej/aktualizującej
         const {batchOperationsCount: savedOps, changedClassesCount: changes} =
         await processAndUpdateBatch(scheduleItems, groupId, weekId, batch);
         totalClassesSaved += changes;

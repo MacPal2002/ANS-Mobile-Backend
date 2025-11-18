@@ -14,7 +14,6 @@ export const registerStudent = functions.https.onCall(
   async (request: functions.https.CallableRequest<RegisterStudentData>) => {
     const {email, password, albumNumber, verbisPassword} = request.data;
 
-    // Walidacja danych wejściowych
     if (!email || !password || !albumNumber || !verbisPassword) {
       throw new functions.https.HttpsError(
         "invalid-argument",
@@ -22,7 +21,6 @@ export const registerStudent = functions.https.onCall(
       );
     }
 
-    // ZMIANA 1: Sprawdzamy istnienie studenta w kolekcji 'student_lookups' (jest to szybsze i bardziej logiczne)
     const lookupDocRef = db.collection(COLLECTIONS.STUDENT_LOOKUPS).doc(albumNumber);
     const lookupDoc = await lookupDocRef.get();
     if (lookupDoc.exists) {
@@ -32,13 +30,11 @@ export const registerStudent = functions.https.onCall(
       );
     }
 
-    // Weryfikacja w systemie uczelni
     const loginData = await loginToUniversity(albumNumber, verbisPassword);
     const {fullName, verbisId} = loginData;
 
     let newUserUid: string | null = null;
     try {
-      // Tworzenie konta w Firebase Auth
       const userRecord = await auth.createUser({
         email: email,
         password: password,
@@ -46,13 +42,11 @@ export const registerStudent = functions.https.onCall(
       });
       newUserUid = userRecord.uid;
       functions.logger.info(
-        `✅ Pomyślnie utworzono konto Firebase. UID: ${newUserUid}`,
+        `Pomyślnie utworzono konto Firebase. UID: ${newUserUid}`,
       );
 
-      // ZMIANA 2: Używamy "batched write" do zapisu w obu kolekcjach na raz
       const batch = db.batch();
 
-      // 1. Przygotowujemy zapis do kolekcji 'students' (dane prywatne)
       const studentDocRef = db.collection(COLLECTIONS.STUDENTS).doc(newUserUid);
       batch.set(studentDocRef, {
         uid: newUserUid,
@@ -61,31 +55,26 @@ export const registerStudent = functions.https.onCall(
         displayName: fullName,
         verbisId: verbisId,
         createdAt: new Date(),
-        // observedGroups: [], // Domyślnie pusta lista obserwowanych grup
+        // observedGroups: [],
         // devices: [],
       });
 
-      // Inicjalizacja dokumentu w 'student_observed_groups' z pustą listą
       const observedGroupsDocRef = db.collection(COLLECTIONS.STUDENT_OBSERVED_GROUPS).doc(newUserUid);
       batch.set(observedGroupsDocRef, {
         userId: newUserUid,
         groups: [],
       });
 
-      // Inicjalizacja dokumentu w 'student_devices' z pustą listą
       const devicesDocRef = db.collection(COLLECTIONS.STUDENT_DEVICES).doc(newUserUid);
       batch.set(devicesDocRef, {
         userId: newUserUid,
         devices: [],
       });
 
-      // 2. Przygotowujemy zapis do kolekcji 'student_lookups' (dane publiczne)
-      // ID dokumentu to numer albumu, a w środku tylko email
       batch.set(lookupDocRef, {
         email: email,
       });
 
-      // 3. Wykonujemy oba zapisy atomowo
       await batch.commit();
 
       return {
@@ -94,7 +83,6 @@ export const registerStudent = functions.https.onCall(
         uid: newUserUid,
       };
     } catch (error: unknown) {
-      // Logika sprzątająca w razie błędu pozostaje bez zmian - jest bardzo dobra!
       if (newUserUid) {
         await auth.deleteUser(newUserUid);
         functions.logger.warn(

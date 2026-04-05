@@ -2,8 +2,7 @@ import {loginToUniversity} from "./universityService";
 import {getSessionFromFirestore, saveSessionToFirestore} from "./firestore";
 import {telegramBotToken, telegramChatId, testKey, verbisLogin, verbisPassword} from "./env";
 
-// --- CENTRALNY CACHE W PAMIĘCI ---
-// Używamy Mapy, aby cache'ować dowolny sekret
+
 const secretCache = new Map<string, string>();
 // ---------------------------------
 

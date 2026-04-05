@@ -11,12 +11,15 @@ import {db} from "./admin";
  * @param {GroupTreeItem[]} allItems - Tablica elementów drzewa grup do przetworzenia.
  * @param {string} academicYear - Rok akademicki w formacie tekstowym (np. "2023-2024").
  * @param {number} academicYearStart - Rok rozpoczęcia roku akademickiego (np. 2023).
+ * @param {("Z"|"L"|null)} forcedSemesterType - Opcjonalne wymuszenie typu semestru.
+ * Używane dla payloadów jednosemestralnych, gdzie etykiety grup nie zawierają (Z)/(L).
  * @return {WriteBatch[]} Tablica paczek (batches) do zapisu w Firestore.
  */
 export function processGroupTree(
   allItems: GroupTreeItem[],
   academicYear: string,
-  academicYearStart: number
+  academicYearStart: number,
+  forcedSemesterType: "Z" | "L" | null = null
 ): WriteBatch[] {
   const batches: WriteBatch[] = [];
   let currentBatch = db.batch();
@@ -40,12 +43,28 @@ export function processGroupTree(
       let semesterIdentifier: string | null = null;
       const semesterMatch = groupName.match(/\s\(([ZL])\)$/);
 
-      if (semesterMatch) {
+      if (forcedSemesterType) {
+        semesterIdentifier = forcedSemesterType === "Z" ?
+          `${academicYearStart}Z` :
+          `${academicYearStart + 1}L`;
+      } else if (semesterMatch) {
         const semesterType = semesterMatch[1];
         if (semesterType === "Z") {
           semesterIdentifier = `${academicYearStart}Z`;
         } else {
           semesterIdentifier = `${academicYearStart + 1}L`;
+        }
+      }
+
+      if (!semesterIdentifier && newContext.semester) {
+        const cycleMatch = newContext.semester.match(/(\d+)$/);
+        if (cycleMatch) {
+          const cycleNumber = Number(cycleMatch[1]);
+          if (!Number.isNaN(cycleNumber)) {
+            semesterIdentifier = cycleNumber % 2 === 0 ?
+              `${academicYearStart + 1}L` :
+              `${academicYearStart}Z`;
+          }
         }
       }
 

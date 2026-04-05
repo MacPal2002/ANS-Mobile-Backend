@@ -24,20 +24,26 @@ export const updateDeanGroups = scheduler.onSchedule({
 
   try {
     const semesterInfo = getSemesterInfo(new Date());
+
+
     if (!semesterInfo) {
       functions.logger.warn("Uruchomiono 'updateDeanGroups', ale jest okres wakacyjny. Zatrzymuję.");
       return;
     }
-    if (semesterInfo.identifier.endsWith("L")) {
-      functions.logger.warn(`Uruchomiono 'updateDeanGroups', ale wykryto semestr letni (${semesterInfo.identifier}). Zatrzymuję.`);
-      return;
-    }
+
     const {academicYear} = semesterInfo;
     const academicYearStart = parseInt(academicYear.split("-")[0]);
     const winterSemesterId = 90 + (academicYearStart - 2025) * 2;
+    const summerSemesterId = winterSemesterId + 1;
+    const isWinter = semesterInfo.identifier.endsWith("Z");
+    const pickedSemesterId = isWinter ? winterSemesterId : summerSemesterId;
+    const wholeYear = isWinter;
+    const forcedSemesterType = wholeYear ? null : (isWinter ? "Z" : "L");
+
     functions.logger.info(`Przetwarzanie dla roku akademickiego: ${academicYear}`);
 
-    const allItems = await fetchGroupTreeForSemester(winterSemesterId);
+
+    const allItems = await fetchGroupTreeForSemester(pickedSemesterId, wholeYear);
 
     if (allItems.length === 0) {
       functions.logger.warn("Pobrano 0 jednostek. Zakończono zadanie.");
@@ -48,7 +54,8 @@ export const updateDeanGroups = scheduler.onSchedule({
     const batches = processGroupTree(
       allItems,
       academicYear,
-      academicYearStart
+      academicYearStart,
+      forcedSemesterType
     );
 
     if (batches.length > 0) {

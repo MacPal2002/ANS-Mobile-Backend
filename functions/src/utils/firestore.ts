@@ -289,16 +289,12 @@ export const getAllGroupIdsForSemester = async (semesterIdentifier: string): Pro
 
   const modeCollsPromises = fieldDocsSnapshot.docs.map((fieldDoc) => fieldDoc.ref.listCollections());
   const allModeCollsNested = await Promise.all(modeCollsPromises);
-  const allModeColls = allModeCollsNested.flat(); // Spłaszcz tablicę tablic
-
-  // Zbierz wszystkie obietnice pobierania dokumentów
+  const allModeColls = allModeCollsNested.flat();
   const semesterDocsPromises = allModeColls.map((modeColl) => modeColl.get());
   const allSemesterSnapshots = await Promise.all(semesterDocsPromises);
 
-  // Teraz iteruj po wynikach, które już masz
   for (const semesterDoc of allSemesterSnapshots.flatMap((snap) => snap.docs)) {
     const groupData = semesterDoc.data();
-    // 4. Zbierz wszystkie wartości liczbowe (ID grup) z każdego dokumentu
     Object.values(groupData).forEach((id) => {
       if (typeof id === "number") {
         allGroupIds.add(id);
@@ -371,13 +367,12 @@ export async function getScheduleForWeek(groupId: number, weekId: string): Promi
 async function buildTreeForDocument(doc: DocumentSnapshot): Promise<any> {
   const subcollections = await doc.ref.listCollections();
 
-  // Przypadek 1: Ten dokument jest "liściem" zawierającym mapę grup (np. "semestr 6")
   if (subcollections.length === 0) {
     const data = doc.data() || {};
     const children = Object.entries(data).map(([name, id]) => ({
       id: String(id),
       name: name,
-      type: "group", // To jest finalna, wybieralna grupa
+      type: "group",
       children: [],
       groupId: id as number,
     }));
@@ -391,13 +386,11 @@ async function buildTreeForDocument(doc: DocumentSnapshot): Promise<any> {
     };
   } else {
     const childrenPromises = subcollections.map(async (subColl: { id?: any; get?: (() => any) | undefined; }) => {
-      // Dla każdej podkolekcji (np. "2025L") tworzymy osobny, klikalny węzeł...
       if (typeof subColl.get === "function") {
         return {
           id: subColl.id,
           name: subColl.id,
           type: "parent_node",
-          // ...i rekurencyjnie budujemy drzewo dla dokumentów wewnątrz niej.
           children: await buildTreeForCollection(subColl as { get: () => any }),
           groupId: null,
         };
@@ -447,12 +440,10 @@ export async function cleanupInvalidTokens(
   const tokensToDelete: TokenInfo[] = [];
 
   response.responses.forEach((result, index) => {
-    // Sprawdź, czy wysyłka dla danego tokena się nie powiodła
     if (!result.success) {
       const errorCode = result.error?.code;
       console.log(`Błąd wysyłki do tokena: ${tokenInfos[index].token}, kod: ${errorCode}`);
 
-      // Sprawdź, czy błąd oznacza, że token jest nieprawidłowy/niezarejestrowany
       if (
         errorCode === "messaging/registration-token-not-registered" ||
         errorCode === "messaging/invalid-registration-token"
@@ -462,17 +453,14 @@ export async function cleanupInvalidTokens(
     }
   });
 
-  // Jeśli znaleziono tokeny do usunięcia, wykonaj operacje na bazie danych
   if (tokensToDelete.length > 0) {
     console.log(`Znaleziono ${tokensToDelete.length} nieaktywnych tokenów do usunięcia.`);
-    // Stwórz listę wszystkich operacji usunięcia (obietnic)
     const deletePromises = tokensToDelete.map((info) => {
       return db.collection(COLLECTIONS.STUDENT_DEVICES).doc(info.userId).update({
         [`devices.${info.deviceId}`]: firestore.FieldValue.delete(),
       });
     });
 
-    // Zaczekaj, aż wszystkie operacje zakończą się równolegle
     await Promise.all(deletePromises);
     console.log(`Pomyślnie usunięto dane dla ${tokensToDelete.length} nieaktywnych tokenów.`);
   }

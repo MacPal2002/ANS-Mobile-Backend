@@ -158,7 +158,7 @@ export const fetchScheduleForGroup = async (groupId: number, weekStartTimestamp:
 
   const payload = {
     service: "Planowanie",
-    method: "getUlozoneTerminyGrupy",
+    method: "getOpublikowaneSpotkaniaGrupy",
     params: {
       idGrupyDziekanskiej: groupId,
       poczatekTygodnia: weekStartTimestamp,
@@ -173,7 +173,6 @@ export const fetchScheduleForGroup = async (groupId: number, weekStartTimestamp:
   } catch (error) {
     if (error instanceof Error) {
       if (error.message === "SessionExpiredRetry") {
-        // Sesja jest już naprawiona. Rzucamy błąd, aby Cloud Tasks ponowił zadanie.
         throw new Error("Sesja została odświeżona, wymagane ponowne uruchomienie.");
       }
       if (isAxiosError(error) && (
@@ -208,10 +207,13 @@ export const fetchScheduleForGroup = async (groupId: number, weekStartTimestamp:
 /**
  * Pobiera pełne drzewo grup dziekańskich dla danego semestru.
  * Obsługuje logikę dwuetapowego pobierania i odświeżania sesji.
- * @param {number} winterSemesterId Identyfikator semestru zimowego.
+ * @param {number} semesterId Identyfikator semestru zimowego.
+ * @param {boolean} wholeYear Określa, czy pobierać dane dla całego cyklu rocznego.
+ * @return {Promise<GroupTreeItem[]>} Pełna lista elementów drzewa grup.
  */
 export async function fetchGroupTreeForSemester(
-  winterSemesterId: number
+  semesterId: number,
+  wholeYear = true
 ): Promise<GroupTreeItem[]> {
   let sessionCookie = await getValidSessionCookie();
   let headers = {
@@ -225,7 +227,7 @@ export async function fetchGroupTreeForSemester(
   const initialPayload = {
     service: "Planowanie",
     method: "getGrupySemestralneSemestru",
-    params: {idSemestru: winterSemesterId, cyklRoczny: true, itemIdList: ["r0"]},
+    params: {idSemestru: semesterId, cyklRoczny: wholeYear, itemIdList: ["r0"]},
   };
 
   let initialResponse;
@@ -261,7 +263,7 @@ export async function fetchGroupTreeForSemester(
   const finalPayload = {
     service: "Planowanie",
     method: "getGrupySemestralneSemestru",
-    params: {idSemestru: winterSemesterId, cyklRoczny: true, itemIdList: unitIds},
+    params: {idSemestru: semesterId, cyklRoczny: wholeYear, itemIdList: unitIds},
   };
 
   let finalResponse;

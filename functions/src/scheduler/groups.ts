@@ -38,7 +38,7 @@ export const updateDeanGroups = scheduler.onSchedule({
     const isWinter = semesterInfo.identifier.endsWith("Z");
     const pickedSemesterId = isWinter ? winterSemesterId : summerSemesterId;
     const wholeYear = isWinter;
-    const forcedSemesterType = wholeYear ? null : (isWinter ? "Z" : "L");
+    const forcedSemesterType = wholeYear ? null : "L";
 
     functions.logger.info(`Przetwarzanie dla roku akademickiego: ${academicYear}`);
 
